@@ -20,6 +20,7 @@
   <a href="#quick-start">Quick Start</a> &middot;
   <a href="#auto-fix-in-action">Auto-Fix Demo</a> &middot;
   <a href="#cdktf-support">CDKTF</a> &middot;
+  <a href="#terragrunt-support">Terragrunt</a> &middot;
   <a href="#cicd-integration">CI/CD</a> &middot;
   <a href="#mcp-server">MCP Server</a> &middot;
   <a href="CHANGELOG.md">Changelog</a>
@@ -48,11 +49,13 @@ It downloads both module versions, diffs their variable schemas, detects renames
 | **Schema diff (download &amp; compare both versions)** | &check; | &cross; | &cross; | &cross; |
 | Upgrade path recommendations | &check; | &cross; | &cross; | &cross; |
 | **CDKTF support (cdktf.json + package.json)** | &check; | &cross; | &cross; | &cross; |
+| **Terragrunt support (terragrunt.hcl)** | &check; | &cross; | &cross; | &check;\*\* |
 | Creates PRs automatically | &cross; | &cross;\* | &check; | &check; |
 | MCP server (AI editor integration) | &check; | &cross; | &cross; | &cross; |
 | Multi-cloud (AWS, Azure, GCP) | &check; | &check; | &check; | &check; |
 
 \* tfupdate can be combined with CI to create PRs, but doesn't do it natively.
+\*\* Dependabot has basic Terragrunt version bumping but no breaking change detection or code transforms.
 
 ## Auto-Fix in Action
 
@@ -198,7 +201,7 @@ tfoutdated fix -p ./terraform
 
 Bumps versions **and** applies code changes:
 
-- **Version bumps** — Updates version constraints in `.tf`, `cdktf.json`, and `package.json`
+- **Version bumps** — Updates version constraints in `.tf`, `cdktf.json`, `package.json`, and `terragrunt.hcl`
 - **Variable renames** — Rewrites renamed attributes in module calls (e.g., `cluster_name` &rarr; `name`)
 - **Value transforms** — Updates accessor patterns (e.g., `.name` &rarr; `.id`)
 - **Attribute removals** — Removes deleted attributes with comments
@@ -341,6 +344,56 @@ Supported provider packages: `aws`, `azurerm`, `google`, `azuread`, `azapi`, `ku
 
 See [live CDKTF CI results](https://github.com/AnassKartit/tfoutdated-tests/actions) for AWS and Azure.
 
+## Terragrunt Support
+
+tfoutdated scans `terragrunt.hcl` files that use Terraform Registry modules via the `tfr:///` source format.
+
+```hcl
+# terragrunt.hcl
+terraform {
+  source = "tfr:///terraform-aws-modules/eks/aws?version=19.0.0"
+}
+
+inputs = {
+  cluster_name    = "production-cluster"
+  cluster_version = "1.27"
+}
+```
+
+```bash
+$ tfoutdated scan -p ./my-terragrunt-project
+
+  1 outdated (1 major) · 50 breaking (32 auto-fixable)
+
+ DEPENDENCY                      LOCATION          CURRENT   LATEST    TYPE
+ terraform-aws-modules/eks/aws   terragrunt.hcl:1  19.0.0    21.15.1   MAJOR ↑2
+```
+
+`tfoutdated fix` rewrites the `?version=` parameter in-place:
+
+```bash
+$ tfoutdated fix -p ./my-terragrunt-project
+
+  terragrunt.hcl
+    ✓ eks  19.0.0 → 21.15.1
+
+  1 changes applied:  1 upgraded
+```
+
+```diff
+ terraform {
+-  source = "tfr:///terraform-aws-modules/eks/aws?version=19.0.0"
++  source = "tfr:///terraform-aws-modules/eks/aws?version=21.15.1"
+ }
+```
+
+Supported source formats:
+- `tfr:///namespace/name/provider?version=X.Y.Z` — Terraform Registry
+- `tfr://namespace/name/provider?version=X.Y.Z` — alternate double-slash
+- `git::https://github.com/org/repo.git?ref=vX.Y.Z` — Git sources with version tags
+
+See [live Terragrunt CI results](https://github.com/AnassKartit/tfoutdated-tests/actions) for AWS and Azure.
+
 ## Output Formats
 
 | Format | Flag | Use Case |
@@ -459,7 +512,7 @@ Add to your MCP config:
 
 ## How It Works
 
-1. **Scan** — Reads `.tf` files, `cdktf.json`, and `package.json`, resolves current vs latest versions from [Terraform Registry](https://registry.terraform.io)
+1. **Scan** — Reads `.tf` files, `cdktf.json`, `package.json`, and `terragrunt.hcl`, resolves current vs latest versions from [Terraform Registry](https://registry.terraform.io)
 2. **Schema Diff** — Downloads both module versions from GitHub, parses HCL, compares variable schemas
 3. **Rename Detection** — Multi-signal bipartite matching (name similarity, type, description, defaults)
 4. **Value Inference** — Derives accessor changes from variable name suffixes (e.g., `resource_group_name` &rarr; `parent_id` implies `.name` &rarr; `.id`)
