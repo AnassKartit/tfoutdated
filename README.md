@@ -34,22 +34,23 @@
 
 ## Why tfoutdated?
 
-Other tools tell you a module is outdated. **tfoutdated fixes it.**
+Other tools bump the version number in your `.tf` file. **tfoutdated also fixes your code.**
 
-It downloads both module versions, diffs their schemas, detects renamed variables, applies value transforms, updates provider constraints — and produces code that passes `terraform validate`.
+It downloads both module versions, diffs their variable schemas, detects renames and removals, and rewrites your module calls to match the new API.
 
-| Feature | tfoutdated | tfupdate | Renovate | Dependabot |
+| Feature | tfoutdated | [tfupdate](https://github.com/minamijoyo/tfupdate) | [Renovate](https://docs.renovatebot.com/modules/manager/terraform/) | [Dependabot](https://docs.github.com/en/code-security/dependabot) |
 |---------|:----------:|:--------:|:--------:|:----------:|
-| Detect outdated modules & providers | &check; | &check; | &check; | &check; |
-| **Breaking change detection** | &check; | &cross; | &cross; | &cross; |
-| **Auto-rename variables** | &check; | &cross; | &cross; | &cross; |
-| **Auto-fix value transforms** (`.name` &rarr; `.id`) | &check; | &cross; | &cross; | &cross; |
-| **Provider constraint auto-update** | &check; | &cross; | &cross; | &cross; |
-| **Schema diffing between versions** | &check; | &cross; | &cross; | &cross; |
-| Impact analysis | &check; | &cross; | &cross; | &cross; |
-| Governance recommendations | &check; | &cross; | &cross; | &cross; |
-| MCP server (AI assistant) | &check; | &cross; | &cross; | &cross; |
+| Bump version constraints | &check; | &check; | &check; | &check; |
+| **Detect breaking changes between versions** | &check; | &cross; | &cross; | &cross; |
+| **Auto-rename variables in module calls** | &check; | &cross; | &cross; | &cross; |
+| **Auto-update provider constraints from module deps** | &check; | &cross; | &cross; | &cross; |
+| **Schema diff (download &amp; compare both versions)** | &check; | &cross; | &cross; | &cross; |
+| Upgrade path recommendations | &check; | &cross; | &cross; | &cross; |
+| Creates PRs automatically | &cross; | &cross;\* | &check; | &check; |
+| MCP server (AI editor integration) | &check; | &cross; | &cross; | &cross; |
 | Multi-cloud (AWS, Azure, GCP) | &check; | &check; | &check; | &check; |
+
+\* tfupdate can be combined with CI to create PRs, but doesn't do it natively.
 
 ## Auto-Fix in Action
 
@@ -77,23 +78,26 @@ It downloads both module versions, diffs their schemas, detects renamed variable
 
 ```
 $ tfoutdated fix -p ./terraform
-Updated main.tf: eks 19.0.0 → 21.15.1
-Transformed main.tf: module "eks" rename cluster_name → name
-Transformed main.tf: module "eks" rename cluster_version → kubernetes_version
-Transformed main.tf: module "eks" rename cluster_endpoint_public_access → endpoint_public_access
-Transformed main.tf: module "eks" rename cluster_addons → addons
-Updated main.tf: provider aws ~> 5.30 → ~> 6.28
 
-2 dependencies updated.
+  main.tf
+    ✓ eks  19.0.0 → 21.15.1
+    ✓ s3_bucket  3.0.0 → 5.10.0
+    ↻ eks  rename cluster_name → name
+    ↻ eks  rename cluster_version → kubernetes_version
+    ↻ eks  rename cluster_endpoint_public_access → endpoint_public_access
+    ↻ eks  rename cluster_addons → addons
+    ⚡ aws  ~> 5.30 → ~> 6.28
+
+  7 changes applied:  2 upgraded · 4 renamed · 1 constraints
 ```
 
-### Tested across 30+ real-world modules
+### Tested with real-world modules
 
-| Cloud | Modules Tested | Auto-Fix Result |
-|-------|---------------|-----------------|
-| **AWS** | EKS, VPC, S3, Lambda, RDS, EC2, ALB, ECS, DynamoDB, SQS | `terraform validate` passes |
-| **Azure** | VNet, Storage, NSG, CosmosDB, Key Vault, Service Bus, PostgreSQL, ACR, SQL, multi-module | `terraform validate` passes |
-| **GCP** | Cloud Run, GKE, Cloud NAT, Network, Cloud Functions, Pub/Sub, GCS, Memorystore, Cloud SQL, multi-module | `terraform validate` passes |
+| Cloud | Modules Tested |
+|-------|---------------|
+| **AWS** | EKS, VPC, S3, Lambda, RDS, ALB, ECS |
+| **Azure** | VNet, ACR, Key Vault, Storage, Service Bus, NSG |
+| **GCP** | GKE, Cloud NAT, Network, Cloud Run, Cloud SQL |
 
 ## Quick Start
 
@@ -159,26 +163,9 @@ choco install tfoutdated
 
 Download pre-built binaries from [Releases](https://github.com/AnassKartit/tfoutdated/releases) for Linux, macOS, and Windows (amd64/arm64).
 
-## Scan Output Example
+## Scan Output
 
-```
- DEPENDENCY                                          CURRENT     LATEST      TYPE     IMPACT        FILES
-─────────────────────────────────────────────────────────────────────────────────────────────────────────────
- terraform-aws-modules/eks/aws                       19.0.0      21.15.1     MAJOR    50 break      1 files
- Azure/avm-res-network-virtualnetwork/azurerm        0.7.0       0.17.1      MINOR    6 break       1 files
- hashicorp/azurerm                                   3.75.0      4.63.0      MAJOR    10 break      1 files
-
-Breaking Changes:
-
-  1. [BREAKING] Variable 'cluster_name' renamed to 'name'
-     Fix: Rename 'cluster_name' to 'name' in your module call.
-
-  2. [BREAKING] Variable 'resource_group_name' renamed to 'parent_id'
-     Fix: Rename 'resource_group_name' to 'parent_id' in your module call.
-
-  3. [BREAKING] Variable 'node_security_group_additional_rules' type changed
-     Effort: Medium effort (a few attributes to update)
-```
+The demo GIF above shows the full scan + fix flow. tfoutdated outputs a colored table with breaking change counts, grouped breaking changes with auto-fix labels, and upgrade path recommendations.
 
 ## How It Works
 
