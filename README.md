@@ -305,16 +305,6 @@ ignore:
  </picture>
 </a>
 
-## Sponsors
-
-<p>
-  <a href="https://github.com/sponsors/AnassKartit">
-    <img src="https://img.shields.io/badge/sponsor-❤-ea4aaa?style=for-the-badge&logo=github" alt="Sponsor">
-  </a>
-</p>
-
-If tfoutdated saves you time, consider [sponsoring the project](https://github.com/sponsors/AnassKartit). Your support helps keep this tool maintained and free.
-
 ## Contributing
 
 Contributions welcome! Please open an issue or PR on [GitHub](https://github.com/AnassKartit/tfoutdated).
