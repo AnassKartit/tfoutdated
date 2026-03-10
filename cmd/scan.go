@@ -120,6 +120,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 
 	out, err := output.New(outputFormat, output.Options{
 		NoColor: flagNoColor,
+		Verbose: flagVerbose,
 	})
 	if err != nil {
 		return err

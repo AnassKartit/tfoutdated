@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
 	"github.com/anasskartit/tfoutdated/internal/analyzer"
@@ -36,9 +38,25 @@ func init() {
 }
 
 func runFix(cmd *cobra.Command, args []string) error {
+	if flagNoColor {
+		lipgloss.SetColorProfile(0)
+	}
+	green := lipgloss.NewStyle().Foreground(lipgloss.Color("46"))
+	yellow := lipgloss.NewStyle().Foreground(lipgloss.Color("226"))
+	cyan := lipgloss.NewStyle().Foreground(lipgloss.Color("51"))
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	bold := lipgloss.NewStyle().Bold(true)
+	red := lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
+
 	path, err := filepath.Abs(flagPath)
 	if err != nil {
 		return fmt.Errorf("resolving path: %w", err)
+	}
+
+	if flagDryRun {
+		fmt.Fprintln(os.Stdout)
+		fmt.Fprintln(os.Stdout, yellow.Render("  ▸ DRY RUN — no files will be modified"))
+		fmt.Fprintln(os.Stdout)
 	}
 
 	cfg := config.Load(path)
@@ -54,7 +72,7 @@ func runFix(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(result.Modules) == 0 && len(result.Providers) == 0 {
-		fmt.Println("No Terraform dependencies found.")
+		fmt.Println(dim.Render("  No Terraform dependencies found."))
 		return nil
 	}
 
@@ -70,11 +88,10 @@ func runFix(cmd *cobra.Command, args []string) error {
 	analysis := a.Analyze(resolved)
 
 	analysis.BreakingChanges = detectAllBreakingChanges(resolved)
-
 	analysis.UpgradePaths = analyzer.ComputeUpgradePaths(resolved, analysis.BreakingChanges)
 
 	f := fixer.New(fixer.Options{
-		DryRun:  flagDryRun,
+		DryRun:   flagDryRun,
 		SafeOnly: flagFixSafe,
 	})
 	changes, err := f.Fix(analysis)
@@ -82,14 +99,11 @@ func runFix(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("applying fixes: %w", err)
 	}
 
-	// Apply module call transforms (variable renames/removals from breaking changes)
-	// Only for modules that were actually version-bumped
 	moduleChanges, mcErr := f.FixModuleCalls(analysis, result, changes)
 	if mcErr != nil {
 		fmt.Fprintf(os.Stderr, "Warning: error applying module transforms: %v\n", mcErr)
 	}
 
-	// Fix provider constraints that need widening due to module upgrades
 	var providerChanges []fixer.ProviderChange
 	if len(changes) > 0 {
 		pc, pcErr := f.FixProviderConstraints(changes, result, res.GetRegistry())
@@ -101,35 +115,95 @@ func runFix(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(changes) == 0 && len(moduleChanges) == 0 && len(providerChanges) == 0 {
-		fmt.Println("No safe upgrades available.")
+		fmt.Println(dim.Render("  All dependencies are up to date."))
 		return nil
 	}
 
-	for _, c := range changes {
-		if flagDryRun {
-			fmt.Printf("[dry-run] %s: %s %s → %s\n", c.FilePath, c.Name, c.OldVersion, c.NewVersion)
-		} else {
-			fmt.Printf("Updated %s: %s %s → %s\n", c.FilePath, c.Name, c.OldVersion, c.NewVersion)
+	// Group changes by file
+	type entry struct {
+		icon, text string
+	}
+	fileGroups := map[string][]entry{}
+	fileOrder := []string{}
+	addToGroup := func(file string, e entry) {
+		if _, ok := fileGroups[file]; !ok {
+			fileOrder = append(fileOrder, file)
 		}
+		fileGroups[file] = append(fileGroups[file], e)
+	}
+
+	versionCount, renameCount, providerCount := 0, 0, 0
+
+	for _, c := range changes {
+		versionCount++
+		addToGroup(c.FilePath, entry{
+			icon: green.Render("✓"),
+			text: fmt.Sprintf("%s  %s → %s",
+				bold.Render(c.Name),
+				dim.Render(c.OldVersion),
+				green.Render(c.NewVersion)),
+		})
 	}
 
 	for _, mc := range moduleChanges {
-		if flagDryRun {
-			fmt.Printf("[dry-run] %s: module %q %s %s → %s\n", mc.FilePath, mc.Module, mc.Type, mc.Old, mc.New)
-		} else {
-			fmt.Printf("Transformed %s: module %q %s %s → %s\n", mc.FilePath, mc.Module, mc.Type, mc.Old, mc.New)
-		}
+		renameCount++
+		addToGroup(mc.FilePath, entry{
+			icon: yellow.Render("↻"),
+			text: fmt.Sprintf("%s  %s %s → %s",
+				bold.Render(mc.Module),
+				dim.Render(mc.Type),
+				dim.Render(mc.Old),
+				yellow.Render(mc.New)),
+		})
 	}
 
 	for _, pc := range providerChanges {
-		if flagDryRun {
-			fmt.Printf("[dry-run] %s: provider %s %s → %s (%s)\n", pc.FilePath, pc.ProviderName, pc.OldConstraint, pc.NewConstraint, pc.Reason)
-		} else {
-			fmt.Printf("Updated %s: provider %s %s → %s (%s)\n", pc.FilePath, pc.ProviderName, pc.OldConstraint, pc.NewConstraint, pc.Reason)
-		}
+		providerCount++
+		addToGroup(pc.FilePath, entry{
+			icon: cyan.Render("⚡"),
+			text: fmt.Sprintf("%s  %s → %s  %s",
+				bold.Render(pc.ProviderName),
+				dim.Render(pc.OldConstraint),
+				cyan.Render(pc.NewConstraint),
+				dim.Render(pc.Reason)),
+		})
 	}
 
-	totalUpdates := len(changes) + len(providerChanges)
-	fmt.Printf("\n%d dependencies %s.\n", totalUpdates, map[bool]string{true: "would be updated", false: "updated"}[flagDryRun])
+	fmt.Fprintln(os.Stdout)
+	for _, file := range fileOrder {
+		relFile, err := filepath.Rel(path, file)
+		if err != nil {
+			relFile = file
+		}
+		fmt.Fprintf(os.Stdout, "  %s\n", dim.Render(relFile))
+		for _, e := range fileGroups[file] {
+			fmt.Fprintf(os.Stdout, "    %s %s\n", e.icon, e.text)
+		}
+		fmt.Fprintln(os.Stdout)
+	}
+
+	// Summary line
+	total := versionCount + renameCount + providerCount
+	parts := []string{}
+	if versionCount > 0 {
+		parts = append(parts, green.Render(fmt.Sprintf("%d upgraded", versionCount)))
+	}
+	if renameCount > 0 {
+		parts = append(parts, yellow.Render(fmt.Sprintf("%d renamed", renameCount)))
+	}
+	if providerCount > 0 {
+		parts = append(parts, cyan.Render(fmt.Sprintf("%d constraints", providerCount)))
+	}
+
+	verb := "applied"
+	if flagDryRun {
+		verb = "would apply"
+	}
+
+	fmt.Fprintf(os.Stdout, "  %s %s  %s\n\n",
+		red.Render(fmt.Sprintf("%d", total)),
+		bold.Render("changes "+verb+":"),
+		strings.Join(parts, dim.Render(" · ")))
+
 	return nil
 }

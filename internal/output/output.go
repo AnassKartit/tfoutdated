@@ -15,13 +15,14 @@ type Renderer interface {
 // Options configures output rendering.
 type Options struct {
 	NoColor bool
+	Verbose bool
 }
 
 // New creates a renderer for the given format.
 func New(format string, opts Options) (Renderer, error) {
 	switch format {
 	case "table", "":
-		return &TableRenderer{NoColor: opts.NoColor}, nil
+		return &TableRenderer{NoColor: opts.NoColor, Verbose: opts.Verbose}, nil
 	case "json":
 		return &JSONRenderer{}, nil
 	case "markdown", "md":

@@ -28,6 +28,7 @@ var (
 	flagJSON           bool
 	flagReposFile      string
 	flagOutputFile     string
+	flagVerbose        bool
 )
 
 var rootCmd = &cobra.Command{
@@ -37,7 +38,7 @@ var rootCmd = &cobra.Command{
 performs impact analysis of upgrades, detects breaking changes, and recommends
 safe upgrade paths.
 
-It supports Azure providers (azurerm, azuread) and Azure Verified Modules (AVM)
+It supports multi-cloud providers (AWS, Azure, GCP) and verified modules
 with built-in breaking change knowledge.`,
 	SilenceUsage:  true,
 	SilenceErrors: true,
@@ -58,6 +59,7 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&flagJSON, "json", false, "Shorthand for --output json")
 	rootCmd.PersistentFlags().StringVar(&flagReposFile, "repos", "", "File with repo URLs/paths (one per line)")
 	rootCmd.PersistentFlags().StringVar(&flagOutputFile, "output-file", "", "Write report to file (auto-detects format from extension: .html, .md, .json)")
+	rootCmd.PersistentFlags().BoolVarP(&flagVerbose, "verbose", "v", false, "Show all breaking changes (no truncation)")
 }
 
 // formatFromFilename detects output format from file extension.
