@@ -122,6 +122,12 @@ func (f *Fixer) Fix(analysis *analyzer.Analysis) ([]Change, error) {
 			}
 			continue
 		}
+		if IsTerragruntFile(filePath) {
+			if err := applyTerragruntChanges(filePath, fileChanges); err != nil {
+				return changes, fmt.Errorf("applying terragrunt changes to %s: %w", filePath, err)
+			}
+			continue
+		}
 		if err := applyChanges(filePath, fileChanges); err != nil {
 			return changes, fmt.Errorf("applying changes to %s: %w", filePath, err)
 		}

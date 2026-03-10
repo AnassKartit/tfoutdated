@@ -121,6 +121,15 @@ func (s *Scanner) Scan() (*ScanResult, error) {
 		}
 	}
 
+	// Scan for terragrunt.hcl files
+	tgFiles := findTerragruntFiles(s.opts.Path, s.opts.Recursive)
+	for _, tgFile := range tgFiles {
+		modules, providers := scanTerragruntHCL(tgFile)
+		result.Modules = append(result.Modules, modules...)
+		result.Providers = append(result.Providers, providers...)
+		result.Files = append(result.Files, tgFile)
+	}
+
 	// Read lock file to get actual installed provider versions
 	lockedVersions := parseLockFile(s.opts.Path)
 	if len(lockedVersions) > 0 {
