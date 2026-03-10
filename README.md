@@ -26,6 +26,12 @@
 
 ---
 
+<p align="center">
+  <img src="demo/demo.gif" alt="tfoutdated demo" width="900">
+</p>
+
+---
+
 ## Why tfoutdated?
 
 Other tools tell you a module is outdated. **tfoutdated fixes it.**
