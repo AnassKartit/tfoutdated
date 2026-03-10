@@ -104,6 +104,23 @@ func (s *Scanner) Scan() (*ScanResult, error) {
 		}
 	}
 
+	// Scan for cdktf.json and package.json (cdktf support)
+	cdktfPath, packagePath := findCdktfFiles(s.opts.Path)
+	if cdktfPath != "" {
+		modules, providers := scanCdktfJSON(cdktfPath)
+		result.Modules = append(result.Modules, modules...)
+		result.Providers = append(result.Providers, providers...)
+		result.Files = append(result.Files, cdktfPath)
+	}
+	if packagePath != "" {
+		providers := scanPackageJSON(packagePath)
+		result.Providers = append(result.Providers, providers...)
+		if cdktfPath == "" {
+			// Only add package.json to files list if cdktf.json wasn't already added
+			result.Files = append(result.Files, packagePath)
+		}
+	}
+
 	// Read lock file to get actual installed provider versions
 	lockedVersions := parseLockFile(s.opts.Path)
 	if len(lockedVersions) > 0 {

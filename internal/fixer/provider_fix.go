@@ -78,7 +78,8 @@ func (f *Fixer) FixProviderConstraints(
 	}
 
 	// Build a lookup for current provider constraints from the scan.
-	providerByKey := make(map[string]*scanner.ProviderDependency)
+	// Multiple entries for the same provider (e.g., cdktf.json + package.json) are kept.
+	providersByKey := make(map[string][]*scanner.ProviderDependency)
 	for i := range scan.Providers {
 		p := &scan.Providers[i]
 		ns := p.Namespace
@@ -86,7 +87,7 @@ func (f *Fixer) FixProviderConstraints(
 			ns = "hashicorp"
 		}
 		provKey := ns + "/" + p.Name
-		providerByKey[provKey] = p
+		providersByKey[provKey] = append(providersByKey[provKey], p)
 	}
 
 	var changes []ProviderChange
@@ -108,42 +109,44 @@ func (f *Fixer) FixProviderConstraints(
 			continue
 		}
 
-		prov, ok := providerByKey[provKey]
-		if !ok {
+		provs, ok := providersByKey[provKey]
+		if !ok || len(provs) == 0 {
 			// Provider not declared in the user's config; skip (they may rely on
 			// implicit provider requirements).
 			continue
 		}
 
-		if isConstraintCompatible(prov.Version, highestMin) {
-			continue
-		}
-
-		newConstraint := buildNewConstraint(prov.Version, highestMin)
-		if newConstraint == prov.Version {
-			continue
-		}
-
 		reason := fmt.Sprintf("required by %s", strings.Join(unique(providerReasons[provKey]), ", "))
 
-		pc := ProviderChange{
-			FilePath:      prov.FilePath,
-			ProviderName:  prov.Name,
-			OldConstraint: prov.Version,
-			NewConstraint: newConstraint,
-			Line:          prov.Line,
-			Reason:        reason,
-		}
-		changes = append(changes, pc)
+		for _, prov := range provs {
+			if isConstraintCompatible(prov.Version, highestMin) {
+				continue
+			}
 
-		// Reuse the existing rewriteVersions infrastructure via Change structs.
-		byFile[prov.FilePath] = append(byFile[prov.FilePath], Change{
-			FilePath:   prov.FilePath,
-			Name:       prov.Name,
-			OldVersion: prov.Version,
-			NewVersion: newConstraint,
-			Line:       prov.Line,
-		})
+			newConstraint := buildNewConstraint(prov.Version, highestMin)
+			if newConstraint == prov.Version {
+				continue
+			}
+
+			pc := ProviderChange{
+				FilePath:      prov.FilePath,
+				ProviderName:  prov.Name,
+				OldConstraint: prov.Version,
+				NewConstraint: newConstraint,
+				Line:          prov.Line,
+				Reason:        reason,
+			}
+			changes = append(changes, pc)
+
+			// Reuse the existing rewriteVersions infrastructure via Change structs.
+			byFile[prov.FilePath] = append(byFile[prov.FilePath], Change{
+				FilePath:   prov.FilePath,
+				Name:       prov.Name,
+				OldVersion: prov.Version,
+				NewVersion: newConstraint,
+				Line:       prov.Line,
+			})
+		}
 	}
 
 	if f.opts.DryRun || len(changes) == 0 {
@@ -151,6 +154,18 @@ func (f *Fixer) FixProviderConstraints(
 	}
 
 	for filePath, fileChanges := range byFile {
+		if IsCdktfFile(filePath) {
+			if strings.HasSuffix(filePath, "cdktf.json") {
+				if err := applyCdktfChanges(filePath, fileChanges); err != nil {
+					return changes, fmt.Errorf("applying cdktf provider changes to %s: %w", filePath, err)
+				}
+			} else if strings.HasSuffix(filePath, "package.json") {
+				if err := applyPackageJSONChanges(filePath, fileChanges); err != nil {
+					return changes, fmt.Errorf("applying package.json provider changes to %s: %w", filePath, err)
+				}
+			}
+			continue
+		}
 		if err := applyChanges(filePath, fileChanges); err != nil {
 			return changes, fmt.Errorf("applying provider constraint changes to %s: %w", filePath, err)
 		}

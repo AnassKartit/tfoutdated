@@ -110,6 +110,18 @@ func (f *Fixer) Fix(analysis *analyzer.Analysis) ([]Change, error) {
 
 	// Apply changes file by file
 	for filePath, fileChanges := range byFile {
+		if IsCdktfFile(filePath) {
+			if strings.HasSuffix(filePath, "cdktf.json") {
+				if err := applyCdktfChanges(filePath, fileChanges); err != nil {
+					return changes, fmt.Errorf("applying cdktf changes to %s: %w", filePath, err)
+				}
+			} else if strings.HasSuffix(filePath, "package.json") {
+				if err := applyPackageJSONChanges(filePath, fileChanges); err != nil {
+					return changes, fmt.Errorf("applying package.json changes to %s: %w", filePath, err)
+				}
+			}
+			continue
+		}
 		if err := applyChanges(filePath, fileChanges); err != nil {
 			return changes, fmt.Errorf("applying changes to %s: %w", filePath, err)
 		}
