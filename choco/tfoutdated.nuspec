@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <id>tfoutdated</id>
+    <version>0.1.0</version>
+    <title>tfoutdated - Terraform Dependency Scanner</title>
+    <authors>AnassKartit</authors>
+    <owners>AnassKartit</owners>
+    <projectUrl>https://github.com/AnassKartit/tfoutdated</projectUrl>
+    <licenseUrl>https://github.com/AnassKartit/tfoutdated/blob/main/LICENSE</licenseUrl>
+    <iconUrl>https://raw.githubusercontent.com/AnassKartit/tfoutdated/main/logo.png</iconUrl>
+    <packageSourceUrl>https://github.com/AnassKartit/tfoutdated/tree/main/choco</packageSourceUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <description>Detect outdated Terraform modules and providers with breaking change analysis, upgrade paths, and governance recommendations.
+
+## Features
+- Scans Terraform dependencies (modules and providers)
+- Detects breaking changes in Azure Verified Modules (AVM)
+- Lock file awareness (.terraform.lock.hcl)
+- Safe auto-fix for non-breaking updates
+- MCP server for AI assistant integration
+    </description>
+    <summary>Terraform dependency scanner with breaking change detection</summary>
+    <tags>terraform infrastructure-as-code devops azure iac</tags>
+    <bugTrackerUrl>https://github.com/AnassKartit/tfoutdated/issues</bugTrackerUrl>
+    <releaseNotes>https://github.com/AnassKartit/tfoutdated/releases/tag/v0.2.0</releaseNotes>
+  </metadata>
+  <files>
+    <file src="tools/**" target="tools" />
+  </files>
+</package>

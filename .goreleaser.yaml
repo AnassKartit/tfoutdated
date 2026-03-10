@@ -1,0 +1,63 @@
+version: 2
+before:
+  hooks:
+    - go mod tidy
+builds:
+  - id: tfoutdated
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X github.com/anasskartit/tfoutdated/cmd.version={{.Version}}
+
+  - id: tfoutdated-mcp
+    main: ./cmd/tfoutdated-mcp
+    binary: tfoutdated-mcp
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        format: zip
+checksum:
+  name_template: "checksums.txt"
+brews:
+  - name: tfoutdated
+    repository:
+      owner: AnassKartit
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+    homepage: "https://github.com/AnassKartit/tfoutdated"
+    description: "Detect outdated Terraform modules and providers with breaking change analysis"
+    license: "MIT"
+    install: |
+      bin.install "tfoutdated"
+      bin.install "tfoutdated-mcp" if File.exist?("tfoutdated-mcp")
+    test: |
+      assert_match version.to_s, shell_output("#{bin}/tfoutdated version")
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"

@@ -1,0 +1,6 @@
+- id: tfoutdated
+  name: Check for outdated Terraform dependencies
+  entry: tfoutdated scan
+  language: golang
+  files: \.tf$
+  pass_filenames: false

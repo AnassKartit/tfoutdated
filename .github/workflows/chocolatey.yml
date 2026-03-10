@@ -1,0 +1,84 @@
+name: Chocolatey
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.2.0)"
+        required: true
+
+jobs:
+  chocolatey:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get version
+        id: version
+        shell: bash
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Download checksums from release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          for i in $(seq 1 30); do
+            if gh release download "$TAG" -p "checksums.txt" -R AnassKartit/tfoutdated --clobber 2>/dev/null; then
+              echo "Checksums downloaded"
+              cat checksums.txt
+              exit 0
+            fi
+            echo "Waiting for release assets (attempt $i/30)..."
+            sleep 10
+          done
+          echo "Timed out waiting for release assets"
+          exit 1
+
+      - name: Extract checksum
+        id: checksum
+        shell: bash
+        run: |
+          CHECKSUM=$(grep "windows_amd64.zip" checksums.txt | awk '{print $1}')
+          echo "checksum64=$CHECKSUM" >> "$GITHUB_OUTPUT"
+          echo "Checksum: $CHECKSUM"
+
+      - name: Update nuspec version
+        shell: pwsh
+        run: |
+          $nuspec = Get-Content choco/tfoutdated.nuspec -Raw
+          $nuspec = $nuspec -replace '<version>.*</version>', "<version>${{ steps.version.outputs.version }}</version>"
+          $nuspec = $nuspec -replace 'releases/tag/v[\d.]+', "releases/tag/${{ steps.version.outputs.tag }}"
+          Set-Content choco/tfoutdated.nuspec $nuspec
+
+      - name: Inject checksum into install script
+        shell: pwsh
+        run: |
+          $script = Get-Content choco/tools/chocolateyinstall.ps1 -Raw
+          $script = $script -replace '\[\[CHECKSUM64\]\]', '${{ steps.checksum.outputs.checksum64 }}'
+          Set-Content choco/tools/chocolateyinstall.ps1 $script
+          Write-Host "Injected checksum: ${{ steps.checksum.outputs.checksum64 }}"
+
+      - name: Pack and push
+        shell: pwsh
+        run: |
+          $env:chocolateyPackageVersion = "${{ steps.version.outputs.version }}"
+          cd choco
+          choco pack
+          $output = choco push tfoutdated.${{ steps.version.outputs.version }}.nupkg --source https://push.chocolatey.org/ --api-key ${{ secrets.CHOCOLATEY_API_KEY }} 2>&1
+          $exitCode = $LASTEXITCODE
+          Write-Host $output
+          if ($exitCode -ne 0) {
+            if ($output -match "previous version in a submitted state") {
+              Write-Host "::warning::Chocolatey push skipped: previous version still pending moderation"
+              exit 0
+            }
+            exit $exitCode
+          }

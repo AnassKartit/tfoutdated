@@ -1,0 +1,7 @@
+/tfoutdated
+/tfoutdated-mcp
+dist/
+.terraform/
+*.tfstate
+*.tfstate.backup
+.tfoutdated/cache/

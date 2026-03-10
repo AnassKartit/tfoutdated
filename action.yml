@@ -1,0 +1,81 @@
+name: 'tfoutdated — Terraform Dependency Auditor'
+description: 'Scan Terraform dependencies for outdated modules, providers, breaking changes, and deprecations'
+author: 'Anass Kartit'
+
+branding:
+  icon: 'shield'
+  color: 'blue'
+
+inputs:
+  path:
+    description: 'Path to Terraform root directory'
+    required: false
+    default: '.'
+  version:
+    description: 'Version of tfoutdated to install'
+    required: false
+    default: 'latest'
+  fail-on-outdated:
+    description: 'Fail the step if outdated dependencies are found'
+    required: false
+    default: 'true'
+
+outputs:
+  outdated:
+    description: 'Number of outdated dependencies'
+    value: ${{ steps.scan.outputs.outdated }}
+  breaking:
+    description: 'Number of breaking changes detected'
+    value: ${{ steps.scan.outputs.breaking }}
+  summary:
+    description: 'JSON summary of the scan'
+    value: ${{ steps.scan.outputs.summary }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install tfoutdated
+      shell: bash
+      run: |
+        VERSION="${{ inputs.version }}"
+        if [ "$VERSION" = "latest" ]; then
+          VERSION=$(curl -s https://api.github.com/repos/anasskartit/tfoutdated/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
+        fi
+        ARCH=$(uname -m)
+        case $ARCH in
+          x86_64) ARCH="amd64" ;;
+          aarch64) ARCH="arm64" ;;
+        esac
+        OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+        URL="https://github.com/anasskartit/tfoutdated/releases/download/${VERSION}/tfoutdated_${VERSION#v}_${OS}_${ARCH}.tar.gz"
+        TMP=$(mktemp -d)
+        curl -sL "$URL" -o "${TMP}/tfoutdated.tar.gz"
+        tar -xzf "${TMP}/tfoutdated.tar.gz" -C "${TMP}"
+        mv "${TMP}/tfoutdated" /usr/local/bin/tfoutdated
+        chmod +x /usr/local/bin/tfoutdated
+        rm -rf "$TMP"
+
+    - name: Run scan
+      id: scan
+      shell: bash
+      run: |
+        set +e
+        OUTPUT=$(tfoutdated scan --path "${{ inputs.path }}" --output json 2>&1)
+        EXIT_CODE=$?
+        set -e
+
+        echo "summary<<EOF" >> $GITHUB_OUTPUT
+        echo "$OUTPUT" >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+
+        OUTDATED=$(echo "$OUTPUT" | jq -r '.dependencies | length // 0')
+        BREAKING=$(echo "$OUTPUT" | jq -r '.breaking_changes | length // 0')
+        echo "outdated=$OUTDATED" >> $GITHUB_OUTPUT
+        echo "breaking=$BREAKING" >> $GITHUB_OUTPUT
+
+        # Run with github reporter for annotations
+        tfoutdated scan --path "${{ inputs.path }}" --output github || true
+
+        if [ "${{ inputs.fail-on-outdated }}" = "true" ] && [ "$EXIT_CODE" != "0" ]; then
+          exit 1
+        fi
