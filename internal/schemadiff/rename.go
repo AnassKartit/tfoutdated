@@ -19,6 +19,13 @@ type renameCandidate struct {
 // detectRenames uses multi-signal bipartite matching to find likely renames
 // among removed and added variables. Returns a map from old name to new name.
 func detectRenames(removed, added map[string]*tfconfig.Variable, oldMod, newMod *tfconfig.Module) map[string]string {
+	renames, _ := detectRenamesScored(removed, added, oldMod, newMod)
+	return renames
+}
+
+// detectRenamesScored is detectRenames with the similarity behind each match,
+// so callers can show how strong a guess is.
+func detectRenamesScored(removed, added map[string]*tfconfig.Variable, oldMod, newMod *tfconfig.Module) (map[string]string, map[string]float64) {
 	const threshold = 0.45
 
 	var candidates []renameCandidate
@@ -48,6 +55,7 @@ func detectRenames(removed, added map[string]*tfconfig.Variable, oldMod, newMod 
 
 	// Greedy 1:1 assignment
 	result := make(map[string]string)
+	scores := make(map[string]float64)
 	usedOld := make(map[string]bool)
 	usedNew := make(map[string]bool)
 	for _, c := range candidates {
@@ -55,11 +63,12 @@ func detectRenames(removed, added map[string]*tfconfig.Variable, oldMod, newMod 
 			continue
 		}
 		result[c.oldName] = c.newName
+		scores[c.oldName] = c.score
 		usedOld[c.oldName] = true
 		usedNew[c.newName] = true
 	}
 
-	return result
+	return result, scores
 }
 
 // computeVariableScore calculates the weighted similarity score between two variables.

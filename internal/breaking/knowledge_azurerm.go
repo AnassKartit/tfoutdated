@@ -82,16 +82,16 @@ func (kb *KnowledgeBase) registerAzureRM() {
 			},
 		},
 		{
-			Provider:       "azurerm",
-			Version:        "4.0.0",
-			ResourceType:   "azurerm_app_service_slot",
-			Kind:           ResourceSplit,
-			Severity:       SeverityBreaking,
-			Description:    "azurerm_app_service_slot has been removed. Use azurerm_linux_web_app_slot or azurerm_windows_web_app_slot.",
-			OldValue:       "azurerm_app_service_slot",
-			NewValue:       "azurerm_linux_web_app_slot / azurerm_windows_web_app_slot",
-			AutoFixable:    false,
-			EffortLevel:    "large",
+			Provider:     "azurerm",
+			Version:      "4.0.0",
+			ResourceType: "azurerm_app_service_slot",
+			Kind:         ResourceSplit,
+			Severity:     SeverityBreaking,
+			Description:  "azurerm_app_service_slot has been removed. Use azurerm_linux_web_app_slot or azurerm_windows_web_app_slot.",
+			OldValue:     "azurerm_app_service_slot",
+			NewValue:     "azurerm_linux_web_app_slot / azurerm_windows_web_app_slot",
+			AutoFixable:  false,
+			EffortLevel:  "large",
 			BeforeSnippet: `resource "azurerm_app_service_slot" "staging" {
   name                = "staging"
   app_service_name    = azurerm_app_service.main.name
@@ -167,16 +167,16 @@ provider "azurerm" {
 
 		// Removed resources
 		{
-			Provider:       "azurerm",
-			Version:        "4.0.0",
-			ResourceType:   "azurerm_template_deployment",
-			Kind:           ResourceRemoved,
-			Severity:       SeverityBreaking,
-			Description:    "azurerm_template_deployment has been removed. Use azurerm_resource_group_template_deployment.",
-			OldValue:       "azurerm_template_deployment",
-			NewValue:       "azurerm_resource_group_template_deployment",
-			AutoFixable:    false,
-			EffortLevel:    "medium",
+			Provider:     "azurerm",
+			Version:      "4.0.0",
+			ResourceType: "azurerm_template_deployment",
+			Kind:         ResourceRemoved,
+			Severity:     SeverityBreaking,
+			Description:  "azurerm_template_deployment has been removed. Use azurerm_resource_group_template_deployment.",
+			OldValue:     "azurerm_template_deployment",
+			NewValue:     "azurerm_resource_group_template_deployment",
+			AutoFixable:  false,
+			EffortLevel:  "medium",
 			BeforeSnippet: `resource "azurerm_template_deployment" "main" {
   name                = "my-deployment"
   resource_group_name = azurerm_resource_group.main.name
@@ -195,16 +195,16 @@ provider "azurerm" {
 			},
 		},
 		{
-			Provider:       "azurerm",
-			Version:        "4.0.0",
-			ResourceType:   "azurerm_function_app",
-			Kind:           ResourceSplit,
-			Severity:       SeverityBreaking,
-			Description:    "azurerm_function_app has been removed. Use azurerm_linux_function_app or azurerm_windows_function_app.",
-			OldValue:       "azurerm_function_app",
-			NewValue:       "azurerm_linux_function_app / azurerm_windows_function_app",
-			AutoFixable:    false,
-			EffortLevel:    "large",
+			Provider:     "azurerm",
+			Version:      "4.0.0",
+			ResourceType: "azurerm_function_app",
+			Kind:         ResourceSplit,
+			Severity:     SeverityBreaking,
+			Description:  "azurerm_function_app has been removed. Use azurerm_linux_function_app or azurerm_windows_function_app.",
+			OldValue:     "azurerm_function_app",
+			NewValue:     "azurerm_linux_function_app / azurerm_windows_function_app",
+			AutoFixable:  false,
+			EffortLevel:  "large",
 			BeforeSnippet: `resource "azurerm_function_app" "main" {
   name                       = "my-func"
   location                   = azurerm_resource_group.main.location
@@ -230,16 +230,16 @@ provider "azurerm" {
 			},
 		},
 		{
-			Provider:       "azurerm",
-			Version:        "4.0.0",
-			ResourceType:   "azurerm_function_app_slot",
-			Kind:           ResourceSplit,
-			Severity:       SeverityBreaking,
-			Description:    "azurerm_function_app_slot has been removed. Use azurerm_linux_function_app_slot or azurerm_windows_function_app_slot.",
-			OldValue:       "azurerm_function_app_slot",
-			NewValue:       "azurerm_linux_function_app_slot / azurerm_windows_function_app_slot",
-			AutoFixable:    false,
-			EffortLevel:    "large",
+			Provider:     "azurerm",
+			Version:      "4.0.0",
+			ResourceType: "azurerm_function_app_slot",
+			Kind:         ResourceSplit,
+			Severity:     SeverityBreaking,
+			Description:  "azurerm_function_app_slot has been removed. Use azurerm_linux_function_app_slot or azurerm_windows_function_app_slot.",
+			OldValue:     "azurerm_function_app_slot",
+			NewValue:     "azurerm_linux_function_app_slot / azurerm_windows_function_app_slot",
+			AutoFixable:  false,
+			EffortLevel:  "large",
 			BeforeSnippet: `resource "azurerm_function_app_slot" "staging" {
   name                       = "staging"
   function_app_name          = azurerm_function_app.main.name
@@ -329,16 +329,16 @@ provider "azurerm" {
 	// azurerm v2 → v3 breaking changes (for repos still on v2)
 	kb.register("azurerm", []BreakingChange{
 		{
-			Provider:       "azurerm",
-			Version:        "3.0.0",
-			ResourceType:   "azurerm_virtual_machine",
-			Kind:           ResourceSplit,
-			Severity:       SeverityBreaking,
-			Description:    "azurerm_virtual_machine should be replaced with azurerm_linux_virtual_machine or azurerm_windows_virtual_machine.",
-			OldValue:       "azurerm_virtual_machine",
-			NewValue:       "azurerm_linux_virtual_machine / azurerm_windows_virtual_machine",
-			AutoFixable:    false,
-			EffortLevel:    "large",
+			Provider:     "azurerm",
+			Version:      "3.0.0",
+			ResourceType: "azurerm_virtual_machine",
+			Kind:         ResourceSplit,
+			Severity:     SeverityBreaking,
+			Description:  "azurerm_virtual_machine should be replaced with azurerm_linux_virtual_machine or azurerm_windows_virtual_machine.",
+			OldValue:     "azurerm_virtual_machine",
+			NewValue:     "azurerm_linux_virtual_machine / azurerm_windows_virtual_machine",
+			AutoFixable:  false,
+			EffortLevel:  "large",
 			BeforeSnippet: `resource "azurerm_virtual_machine" "main" {
   name                  = "my-vm"
   location              = azurerm_resource_group.main.location
@@ -379,16 +379,16 @@ provider "azurerm" {
 			},
 		},
 		{
-			Provider:       "azurerm",
-			Version:        "3.0.0",
-			ResourceType:   "azurerm_virtual_machine_scale_set",
-			Kind:           ResourceSplit,
-			Severity:       SeverityBreaking,
-			Description:    "azurerm_virtual_machine_scale_set should be replaced with OS-specific variants.",
-			OldValue:       "azurerm_virtual_machine_scale_set",
-			NewValue:       "azurerm_linux_virtual_machine_scale_set / azurerm_windows_virtual_machine_scale_set",
-			AutoFixable:    false,
-			EffortLevel:    "large",
+			Provider:     "azurerm",
+			Version:      "3.0.0",
+			ResourceType: "azurerm_virtual_machine_scale_set",
+			Kind:         ResourceSplit,
+			Severity:     SeverityBreaking,
+			Description:  "azurerm_virtual_machine_scale_set should be replaced with OS-specific variants.",
+			OldValue:     "azurerm_virtual_machine_scale_set",
+			NewValue:     "azurerm_linux_virtual_machine_scale_set / azurerm_windows_virtual_machine_scale_set",
+			AutoFixable:  false,
+			EffortLevel:  "large",
 			BeforeSnippet: `resource "azurerm_virtual_machine_scale_set" "main" {
   name                = "my-vmss"
   location            = azurerm_resource_group.main.location
@@ -410,15 +410,15 @@ provider "azurerm" {
 			},
 		},
 		{
-			Provider:       "azurerm",
-			Version:        "3.0.0",
-			ResourceType:   "azurerm_container_registry",
-			Attribute:      "admin_enabled",
-			Kind:           DefaultChanged,
-			Severity:       SeverityWarning,
-			Description:    "Default for admin_enabled changed to false.",
-			AutoFixable:    false,
-			EffortLevel:    "small",
+			Provider:     "azurerm",
+			Version:      "3.0.0",
+			ResourceType: "azurerm_container_registry",
+			Attribute:    "admin_enabled",
+			Kind:         DefaultChanged,
+			Severity:     SeverityWarning,
+			Description:  "Default for admin_enabled changed to false.",
+			AutoFixable:  false,
+			EffortLevel:  "small",
 			BeforeSnippet: `resource "azurerm_container_registry" "main" {
   name                = "myregistry"
   resource_group_name = azurerm_resource_group.main.name

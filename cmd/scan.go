@@ -25,10 +25,11 @@ var (
 )
 
 var scanCmd = &cobra.Command{
-	Use:   "scan",
+	Use:   "scan [path]",
 	Short: "Scan for outdated Terraform dependencies",
 	Long: `Scan Terraform configurations for outdated modules and providers,
 analyze impact of upgrades, and detect breaking changes.`,
+	Args: cobra.MaximumNArgs(1),
 	RunE: runScan,
 }
 
@@ -59,23 +60,29 @@ func runScan(cmd *cobra.Command, args []string) error {
 		return runMultiRepoScan()
 	}
 
-	// Comma-separated multi-path support
-	if strings.Contains(flagPath, ",") {
-		return runMultiPathScan(strings.Split(flagPath, ","))
+	target, err := resolveTargetPath(args)
+	if err != nil {
+		return err
 	}
 
-	path, err := filepath.Abs(flagPath)
-	if err != nil {
-		return fmt.Errorf("resolving path: %w", err)
+	// Comma-separated multi-path support
+	if strings.Contains(target, ",") {
+		return runMultiPathScan(strings.Split(target, ","))
 	}
+
+	path := target
 
 	analysis, result, res, err := runScanPipeline(path)
 	if err != nil {
 		return err
 	}
 	if analysis == nil {
-		fmt.Println("No Terraform dependencies found.")
-		return nil
+		if plainTextOutput() {
+			fmt.Println("No Terraform dependencies found.")
+			return nil
+		}
+		// Machine-readable formats still get a (empty) report to parse.
+		analysis = &analyzer.Analysis{}
 	}
 
 	// Provider impact analysis
@@ -105,7 +112,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 	// Filter by severity
 	analysis = analysis.FilterBySeverity(flagSeverity)
 
-	if len(analysis.Dependencies) == 0 && len(analysis.Recommendations) == 0 && analysis.ProviderImpact == nil {
+	if len(analysis.Dependencies) == 0 && len(analysis.Recommendations) == 0 && analysis.ProviderImpact == nil && plainTextOutput() {
 		fmt.Println("All dependencies are up to date.")
 		return nil
 	}
@@ -153,7 +160,13 @@ func runScan(cmd *cobra.Command, args []string) error {
 
 	// Show warnings for provider mismatches and unpinned versions (table output only)
 	if outputFormat == "table" {
-		printProviderWarnings(analysis)
+		printProviderWarnings(result)
+	}
+
+	// check decides its own exit status from -fail-on; scan keeps its codes.
+	if activeGate.enabled {
+		activeGate.record(analysis)
+		return nil
 	}
 
 	// Exit code
@@ -187,6 +200,7 @@ func runScanPipeline(path string) (*analyzer.Analysis, *scanner.ScanResult, *res
 
 	res := resolver.New(resolver.Options{
 		ProviderFilter: flagProviderFilter,
+		SkipLifecycle:  flagOffline,
 	})
 	resolved, err := res.Resolve(result)
 	if err != nil {
@@ -195,6 +209,7 @@ func runScanPipeline(path string) (*analyzer.Analysis, *scanner.ScanResult, *res
 
 	a := analyzer.New()
 	analysis := a.Analyze(resolved)
+	analysis.Target = path
 
 	// Populate scan metadata
 	analysis.ScannedFiles = len(result.Files)
@@ -243,6 +258,9 @@ func runMultiRepoScan() error {
 			fmt.Fprintf(os.Stderr, "tfoutdated: error (%s): %v\n", repo.Name, err)
 			continue
 		}
+		if analysis != nil && repo.URL != "" {
+			analysis.Target = repo.URL // the clone is temporary; the URL is what the reader knows
+		}
 		if analysis == nil {
 			fmt.Printf("No Terraform dependencies found in %s.\n", repo.Name)
 			continue
@@ -271,6 +289,7 @@ func runMultiRepoScan() error {
 		}
 
 		analysis = analysis.FilterBySeverity(flagSeverity)
+		activeGate.record(analysis)
 
 		out, err := output.New(flagOutput, output.Options{
 			NoColor: flagNoColor,
@@ -338,6 +357,7 @@ func runMultiPathScan(paths []string) error {
 		}
 
 		analysis = analysis.FilterBySeverity(flagSeverity)
+		activeGate.record(analysis)
 
 		out, err := output.New(flagOutput, output.Options{NoColor: flagNoColor})
 		if err != nil {
@@ -350,26 +370,59 @@ func runMultiPathScan(paths []string) error {
 	return nil
 }
 
-func printProviderWarnings(analysis *analyzer.Analysis) {
-	// Flag unpinned or loosely pinned versions
-	var unpinned []struct {
-		Name       string
-		Constraint string
-		File       string
-		Line       int
+// plainTextOutput reports whether the result goes to the terminal as a table,
+// where a one-line message can replace an empty report.
+func plainTextOutput() bool {
+	return (flagOutput == "table" || flagOutput == "") && flagOutputFile == ""
+}
+
+// unpinnedDep is a declared dependency whose constraint lets the next init
+// pick a newer major version.
+type unpinnedDep struct {
+	Name       string
+	Constraint string
+	File       string
+	Line       int
+}
+
+// unpinnedDeps checks every declared dependency, including the up-to-date
+// ones the analysis leaves out: ">= 3.0" resolves to the latest today and to a
+// breaking major tomorrow.
+func unpinnedDeps(scan *scanner.ScanResult) []unpinnedDep {
+	var out []unpinnedDep
+	if scan == nil {
+		return out
 	}
-	for _, dep := range analysis.Dependencies {
-		c := strings.TrimSpace(dep.Constraint)
-		if c == "" || c == "latest" || c == "*" ||
-			(strings.HasPrefix(c, ">=") && !strings.Contains(c, "<") && !strings.Contains(c, ",")) {
-			unpinned = append(unpinned, struct {
-				Name       string
-				Constraint string
-				File       string
-				Line       int
-			}{dep.Name, c, dep.FilePath, dep.Line})
+	for _, p := range scan.Providers {
+		// A lock file always pins an exact version; its constraint line only
+		// echoes the .tf files, which are reported on their own.
+		if filepath.Base(p.FilePath) == ".terraform.lock.hcl" {
+			continue
+		}
+		if looseConstraint(p.Version) {
+			out = append(out, unpinnedDep{p.Name, p.Version, p.FilePath, p.Line})
 		}
 	}
+	for _, m := range scan.Modules {
+		switch {
+		case m.SourceType == "registry" && looseConstraint(m.Version):
+			out = append(out, unpinnedDep{m.Name, m.Version, m.FilePath, m.Line})
+		case m.Unpinned:
+			out = append(out, unpinnedDep{m.Name, "", m.FilePath, m.Line})
+		}
+	}
+	return out
+}
+
+// looseConstraint reports a constraint with no upper bound.
+func looseConstraint(c string) bool {
+	c = strings.TrimSpace(c)
+	return c == "" || c == "latest" || c == "*" ||
+		(strings.HasPrefix(c, ">") && !strings.Contains(c, "<") && !strings.Contains(c, ","))
+}
+
+func printProviderWarnings(scan *scanner.ScanResult) {
+	unpinned := unpinnedDeps(scan)
 	if len(unpinned) > 0 {
 		fmt.Fprintf(os.Stderr, "\nWarning: %d dependency(s) not pinned to a specific version:\n", len(unpinned))
 		for _, u := range unpinned {

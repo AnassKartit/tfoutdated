@@ -4,10 +4,14 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"net/url"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/anasskartit/tfoutdated/internal/analyzer"
 	"github.com/anasskartit/tfoutdated/internal/breaking"
+	"github.com/anasskartit/tfoutdated/internal/lifecycle"
 	"github.com/anasskartit/tfoutdated/internal/resolver"
 )
 
@@ -19,402 +23,297 @@ const htmlTemplate = `<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Terraform Dependency Report — tfoutdated</title>
+<title>Dependency plan — {{if .Target}}{{.Target}}{{else}}tfoutdated{{end}}</title>
 <style>
-  *, *::before, *::after { box-sizing: border-box; }
+  /* Layout: a terraform-plan summary on top, then one code-review style block per action. */
   :root {
-    --bg-primary:   #0d1117;
-    --bg-secondary: #161b22;
-    --bg-tertiary:  #1c2129;
-    --border:       #30363d;
-    --text-primary: #c9d1d9;
-    --text-muted:   #8b949e;
-    --accent-blue:  #58a6ff;
-    --accent-blue2: #79c0ff;
-    --green:        #3fb950;
-    --green-bg:     #0d2818;
-    --yellow:       #d29922;
-    --yellow-bg:    #3d2e00;
-    --red:          #f85149;
-    --red-bg:       #3d1f20;
-    --blue-badge:   #1f6feb;
-    --purple:       #bc8cff;
-    --code-bg:      #1a1e24;
+    --ground: #f3f5f8; --paper: #ffffff; --rule: #d5dbe3; --rule-soft: #e7ebf0;
+    --ink: #17202c; --ink-2: #4a5666; --ink-3: #6c7787;
+    --accent: #275d8f;
+    --del: #b3261e; --del-bg: #fdeceb; --del-line: #f4c7c3;
+    --add: #17723a; --add-bg: #e7f6ec; --add-line: #b5e2c3;
+    --warn: #8a5a00; --warn-bg: #fdf3dc;
+    --code: #f7f9fb;
+    --font-ui: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+    --font-head: "Segoe UI Variable Display", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+    --font-code: "Cascadia Code", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
-  body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-    margin: 0; padding: 0;
-    background: var(--bg-primary);
-    color: var(--text-primary);
-    line-height: 1.6;
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #0f141a; --paper: #161d26; --rule: #2a3442; --rule-soft: #212a36;
+      --ink: #e6ebf1; --ink-2: #b2bccb; --ink-3: #8592a5;
+      --accent: #7fb2e5;
+      --del: #ff8a80; --del-bg: #2c1618; --del-line: #5a2a2d;
+      --add: #6fd394; --add-bg: #10261a; --add-line: #1f4a2f;
+      --warn: #e8b75c; --warn-bg: #2a2212;
+      --code: #121820; color-scheme: dark;
+    }
   }
-  .container { max-width: 1280px; margin: 0 auto; padding: 2rem 2.5rem; }
-
-  /* Header */
-  .report-header {
-    display: flex; align-items: center; justify-content: space-between;
-    border-bottom: 2px solid var(--accent-blue); padding-bottom: 1rem; margin-bottom: 2rem;
-  }
-  .report-header h1 { margin: 0; font-size: 1.75rem; color: var(--accent-blue); font-weight: 600; }
-  .report-header .brand { font-size: 0.85rem; color: var(--text-muted); }
-  .report-header .brand a { color: var(--accent-blue); text-decoration: none; }
-
-  /* Stat Cards */
-  .exec-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
-  .stat-card { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem 1.5rem; text-align: center; }
-  .stat-card .stat-value { font-size: 2.25rem; font-weight: 700; line-height: 1.1; }
-  .stat-card .stat-label { font-size: 0.85rem; color: var(--text-muted); margin-top: 0.35rem; }
-  .stat-card.total   .stat-value { color: var(--accent-blue); }
-  .stat-card.major-c .stat-value { color: var(--red); }
-  .stat-card.minor-c .stat-value { color: var(--yellow); }
-  .stat-card.patch-c .stat-value { color: var(--green); }
-  .stat-card.break-c .stat-value { color: var(--red); }
-  .stat-card.miss-c  .stat-value { color: var(--purple); }
-
-  .callout-miss {
-    background: linear-gradient(135deg, #1a1040 0%%, #261447 100%%);
-    border: 1px solid var(--purple); border-radius: 8px; padding: 1rem 1.5rem;
-    margin-bottom: 2rem; font-size: 0.95rem; color: #d2b8ff;
-  }
-  .callout-miss strong { color: #e8d5ff; }
-
-  /* Section Headings */
-  .section-title {
-    color: var(--accent-blue2); font-size: 1.35rem; font-weight: 600;
-    margin: 2.5rem 0 1rem; padding-bottom: 0.4rem; border-bottom: 1px solid var(--border);
-  }
-  .section-title span { font-size: 0.8rem; color: var(--text-muted); font-weight: 400; margin-left: 0.5rem; }
-
-  /* Tables */
-  table { border-collapse: collapse; width: 100%%; margin: 0 0 1.5rem; font-size: 0.9rem; }
-  thead th { background: var(--bg-secondary); color: var(--accent-blue); padding: 0.65rem 0.85rem; text-align: left; border: 1px solid var(--border); font-weight: 600; position: sticky; top: 0; z-index: 1; }
-  tbody td { padding: 0.6rem 0.85rem; border: 1px solid var(--border); vertical-align: top; }
-  tbody tr:nth-child(even) { background: var(--bg-secondary); }
-  tbody tr:hover { background: var(--bg-tertiary); }
-  .major { color: var(--red); font-weight: 700; }
-  .minor { color: var(--yellow); font-weight: 700; }
-  .patch { color: var(--green); font-weight: 700; }
-  .dep-source { font-family: 'SFMono-Regular', Consolas, monospace; font-size: 0.85rem; }
-  .dep-file   { color: var(--text-muted); font-size: 0.82rem; font-family: monospace; }
-
-  /* Breaking Change Cards — new design */
-  .bc-card {
-    border-radius: 8px; padding: 1.25rem 1.5rem; margin: 1rem 0;
-    background: var(--bg-secondary); border: 1px solid var(--border);
-  }
-  .bc-card.breaking { border-left: 5px solid var(--red); }
-  .bc-card.warning  { border-left: 5px solid var(--yellow); }
-  .bc-card.info     { border-left: 5px solid var(--accent-blue); }
-  .bc-header { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.5rem; }
-  .bc-badge { display: inline-block; padding: 0.15rem 0.6rem; border-radius: 4px; font-size: 0.75rem; font-weight: 700; text-transform: uppercase; }
-  .bc-badge.breaking { background: var(--red-bg); color: var(--red); }
-  .bc-badge.warning  { background: var(--yellow-bg); color: var(--yellow); }
-  .bc-badge.info     { background: #0d2640; color: var(--accent-blue); }
-  .bc-effort { display: inline-block; padding: 0.15rem 0.6rem; border-radius: 4px; font-size: 0.72rem; font-weight: 500; background: var(--bg-tertiary); color: var(--text-muted); }
-  .bc-resource { font-family: monospace; font-weight: 600; color: var(--accent-blue2); font-size: 0.95rem; }
-  .bc-desc { margin: 0.4rem 0; font-size: 0.95rem; }
-  .bc-migration { color: var(--text-muted); font-size: 0.9rem; margin-top: 0.4rem; padding-left: 1rem; border-left: 2px solid var(--border); }
-
-  /* Code Snippets */
-  .snippet-container { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; margin-top: 0.8rem; }
-  .snippet-box { border-radius: 6px; overflow: hidden; }
-  .snippet-label { font-size: 0.75rem; font-weight: 600; padding: 0.35rem 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; }
-  .snippet-label.before { background: var(--red-bg); color: var(--red); }
-  .snippet-label.after  { background: var(--green-bg); color: var(--green); }
-  .snippet-code { background: var(--code-bg); padding: 0.75rem; font-family: 'SFMono-Regular', Consolas, monospace; font-size: 0.8rem; line-height: 1.5; white-space: pre-wrap; word-break: break-all; overflow-x: auto; color: var(--text-primary); border: 1px solid var(--border); border-top: none; }
-
-  /* Upgrade Paths */
-  .upgrade-block { margin-bottom: 1.5rem; }
-  .upgrade-block h3 { color: var(--text-primary); font-size: 1rem; margin: 0 0 0.5rem; font-family: monospace; }
-  .step { margin: 0.25rem 0; padding-left: 1.25rem; font-size: 0.9rem; }
-  .safe   { color: var(--green); }
-  .unsafe { color: var(--red); }
-  .safe-target { color: var(--green); font-size: 0.9rem; margin-top: 0.35rem; }
-
-  /* Tool Comparison Matrix */
-  .comparison-table th:first-child { min-width: 240px; }
-  .comparison-table th { text-align: center; white-space: nowrap; }
-  .comparison-table th:first-child { text-align: left; }
-  .comparison-table td { text-align: center; font-size: 0.88rem; }
-  .comparison-table td:first-child { text-align: left; font-weight: 500; color: var(--text-primary); }
-  .comparison-table th.tfoutdated-col { background: linear-gradient(180deg, #0e2a47 0%%, var(--bg-secondary) 100%%); color: #79c0ff; border-bottom: 2px solid var(--accent-blue); }
-  .comparison-table td.tfoutdated-col { background: rgba(88,166,255,0.04); }
-  .c-full    { color: var(--green);  }
-  .c-partial { color: var(--yellow); }
-  .c-none    { color: var(--red);    }
-  .c-planned { color: var(--blue-badge); }
-
-  /* Why Section */
-  .why-section { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; padding: 1.5rem 2rem; margin-top: 2rem; }
-  .why-section h2 { color: var(--accent-blue); font-size: 1.2rem; margin: 0 0 1rem; }
-  .why-section ul { margin: 0; padding-left: 1.25rem; }
-  .why-section li { margin-bottom: 0.6rem; line-height: 1.5; }
-  .why-section li strong { color: var(--accent-blue2); }
-
-  /* Quick Legend */
-  .legend { display: flex; gap: 1.5rem; flex-wrap: wrap; margin: 1rem 0 0.5rem; font-size: 0.85rem; }
-  .legend-item { display: flex; align-items: center; gap: 0.4rem; }
-  .legend-dot { width: 10px; height: 10px; border-radius: 50%%; display: inline-block; }
-  .legend-dot.red { background: var(--red); }
-  .legend-dot.yellow { background: var(--yellow); }
-  .legend-dot.green { background: var(--green); }
-
-  /* Footer */
-  footer { margin-top: 3rem; color: var(--text-muted); font-size: 0.82rem; border-top: 1px solid var(--border); padding-top: 1rem; text-align: center; }
-  footer a { color: var(--accent-blue); text-decoration: none; }
-
-  /* Print */
-  @media print {
-    :root { --bg-primary:#fff; --bg-secondary:#f6f8fa; --bg-tertiary:#eef1f5; --border:#d0d7de; --text-primary:#1f2328; --text-muted:#656d76; --accent-blue:#0969da; --accent-blue2:#0550ae; --green:#1a7f37; --green-bg:#dafbe1; --yellow:#9a6700; --yellow-bg:#fff8c5; --red:#cf222e; --red-bg:#ffebe9; --blue-badge:#0969da; --purple:#8250df; --code-bg:#f6f8fa; }
-    body { background: #fff; }
-    .container { padding: 1rem; }
-    thead th { position: static; }
-    .snippet-container { break-inside: avoid; }
+  :root[data-theme="dark"] {
+    --ground: #0f141a; --paper: #161d26; --rule: #2a3442; --rule-soft: #212a36;
+    --ink: #e6ebf1; --ink-2: #b2bccb; --ink-3: #8592a5;
+    --accent: #7fb2e5;
+    --del: #ff8a80; --del-bg: #2c1618; --del-line: #5a2a2d;
+    --add: #6fd394; --add-bg: #10261a; --add-line: #1f4a2f;
+    --warn: #e8b75c; --warn-bg: #2a2212;
+    --code: #121820; color-scheme: dark;
   }
 
-  /* Responsive */
-  @media (max-width: 900px) { .container { padding: 1rem; } .exec-summary { grid-template-columns: repeat(2, 1fr); } table { font-size: 0.82rem; } thead th, tbody td { padding: 0.45rem 0.55rem; } .snippet-container { grid-template-columns: 1fr; } }
-  @media (max-width: 600px) { .exec-summary { grid-template-columns: 1fr; } .report-header { flex-direction: column; align-items: flex-start; gap: 0.5rem; } table { display: block; overflow-x: auto; } }
+  *, *::before, *::after { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0; background: var(--ground); color: var(--ink); font: 15px/1.6 var(--font-ui); }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  a:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+  code { font-family: var(--font-code); font-size: 0.88em; }
+  .page { max-width: 1040px; margin: 0 auto; padding-inline: 20px; padding-block: 36px 56px; display: grid; gap: 40px; }
+
+  /* Masthead */
+  .mast { display: grid; gap: 18px; }
+  .mast-top { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; color: var(--ink-3); font-size: 13px; }
+  .mast-top .tool { font-family: var(--font-code); letter-spacing: .02em; }
+  h1 { font-family: var(--font-head); font-size: 30px; line-height: 1.15; font-weight: 650; margin: 0; text-wrap: balance; }
+  .target { font-family: var(--font-code); font-size: 13px; color: var(--ink-2); overflow-wrap: anywhere; }
+
+  .plan { background: var(--paper); border: 1px solid var(--rule); border-radius: 8px; padding: 18px 20px; display: grid; gap: 14px; }
+  .plan-line { font-family: var(--font-code); font-size: 16px; font-weight: 600; margin: 0; }
+  .plan-line .n-del { color: var(--del); } .plan-line .n-warn { color: var(--warn); } .plan-line .n-add { color: var(--add); }
+  .bar { display: flex; height: 10px; border-radius: 5px; overflow: hidden; background: var(--rule-soft); }
+  .bar span { display: block; min-width: 3px; }
+  .bar .s-replace { background: var(--del); } .bar .s-major { background: color-mix(in srgb, var(--del) 55%, var(--warn)); }
+  .bar .s-minor { background: var(--warn); } .bar .s-patch { background: color-mix(in srgb, var(--add) 70%, var(--paper)); } .bar .s-ok { background: var(--add); }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 13px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+  .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; vertical-align: 0; }
+  .plan-hint { margin: 0; font-size: 14px; color: var(--ink-2); }
+
+  /* Sections */
+  section { display: grid; gap: 14px; }
+  .sec-head { display: grid; gap: 2px; }
+  h2 { font-family: var(--font-head); font-size: 20px; font-weight: 650; margin: 0; display: flex; align-items: baseline; gap: 10px; }
+  h2 .n { font-family: var(--font-code); font-size: 14px; color: var(--ink-3); font-weight: 500; }
+  .sec-head p { margin: 0; color: var(--ink-2); font-size: 14px; max-width: 70ch; }
+
+  /* One action: a file header, three answers, the diff */
+  .item { background: var(--paper); border: 1px solid var(--rule); border-radius: 8px; overflow: hidden; }
+  .item-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; padding: 10px 16px; background: var(--code); border-bottom: 1px solid var(--rule); }
+  .item-head .file { font-family: var(--font-code); font-size: 13px; color: var(--ink-2); min-width: 0; overflow-wrap: anywhere; }
+  .item-head .file b { color: var(--ink); font-weight: 600; }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  .btn { font-size: 13px; border: 1px solid var(--rule); background: var(--paper); color: var(--ink); border-radius: 6px; padding: 3px 10px; white-space: nowrap; }
+  .btn:hover { border-color: var(--accent); color: var(--accent); text-decoration: none; }
+  .btn.go { border-color: var(--add-line); color: var(--add); }
+
+  .answers { display: grid; grid-template-columns: 7.5rem 1fr; gap: 6px 16px; padding: 14px 16px 4px; font-size: 14px; }
+  .answers dt { color: var(--ink-3); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; padding-top: 2px; }
+  .answers dd { margin: 0; min-width: 0; }
+  .tag { display: inline-block; font-size: 11.5px; font-weight: 700; letter-spacing: .04em; padding: 1px 7px; border-radius: 4px; margin-right: 6px; vertical-align: 1px; }
+  .tag.del { background: var(--del-bg); color: var(--del); } .tag.warn { background: var(--warn-bg); color: var(--warn); } .tag.add { background: var(--add-bg); color: var(--add); }
+
+  .diff { margin: 10px 16px 16px; border: 1px solid var(--rule); border-radius: 6px; background: var(--code); overflow-x: auto; }
+  .diff pre { margin: 0; padding: 10px 0; font-family: var(--font-code); font-size: 13px; line-height: 1.65; }
+  .diff .l { display: block; padding: 0 14px; white-space: pre; }
+  .diff .l.del { background: var(--del-bg); color: var(--del); }
+  .diff .l.add { background: var(--add-bg); color: var(--add); }
+  .diff .l.ctx { color: var(--ink-3); }
+  .diff .l.note { color: var(--ink-3); font-style: italic; }
+
+  .evidence { border-top: 1px solid var(--rule-soft); padding: 12px 16px 14px; display: grid; gap: 6px; }
+  .evidence h3 { margin: 0; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-3); font-weight: 600; }
+  .evidence ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; font-size: 14px; }
+  .evidence li { display: flex; gap: 8px; align-items: baseline; min-width: 0; }
+  .evidence svg { flex: none; width: 14px; height: 14px; position: relative; top: 2px; }
+  .evidence .src { color: var(--ink-3); font-family: var(--font-code); font-size: 12px; overflow-wrap: anywhere; }
+
+  /* Breaking changes and paths reuse the item frame */
+  .bc-body { padding: 14px 16px; display: grid; gap: 8px; font-size: 14px; }
+  .bc-body p { margin: 0; }
+  .muted { color: var(--ink-2); }
+  .twocol { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .twocol .diff { margin: 0; }
+  .twocol .cap { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-3); padding: 6px 14px 0; }
+  .path { display: flex; flex-wrap: wrap; gap: 6px; font-family: var(--font-code); font-size: 13px; padding: 12px 16px 14px; align-items: center; }
+  .path .ok { color: var(--add); } .path .bad { color: var(--del); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th { text-align: left; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-3); font-weight: 600; padding: 8px 16px; border-bottom: 1px solid var(--rule); }
+  td { padding: 8px 16px; border-bottom: 1px solid var(--rule-soft); font-variant-numeric: tabular-nums; }
+  tr:last-child td { border-bottom: 0; }
+
+  footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule); padding-top: 16px; display: flex; flex-wrap: wrap; gap: 8px 20px; justify-content: space-between; }
+
+  @media (max-width: 700px) {
+    h1 { font-size: 24px; }
+    .answers { grid-template-columns: 1fr; gap: 2px; }
+    .answers dd { margin-bottom: 8px; }
+    .twocol { grid-template-columns: 1fr; }
+  }
+  @media print { body { background: #fff; } .item { break-inside: avoid; } }
 </style>
 </head>
 <body>
-<div class="container">
+<div class="page">
 
-<div class="report-header">
-  <h1>Terraform Dependency Report</h1>
-  <div class="brand">Generated by <a href="https://github.com/anasskartit/tfoutdated">tfoutdated</a></div>
-</div>
+<header class="mast">
+  <div class="mast-top"><span class="tool">tfoutdated</span><span>{{.GeneratedAt}}</span></div>
+  <h1>Dependency plan</h1>
+  {{if .Target}}<div class="target">{{if .TargetLink}}<a href="{{.TargetLink}}" target="_blank" rel="noopener">{{.Target}}</a>{{else}}{{.Target}}{{end}}</div>{{end}}
 
-<!-- Executive Summary -->
-<div class="exec-summary">
-  <div class="stat-card total"><div class="stat-value">{{.TotalDeps}}</div><div class="stat-label">Dependencies Scanned</div></div>
-  <div class="stat-card major-c"><div class="stat-value">{{.MajorCount}}</div><div class="stat-label">Major Updates</div></div>
-  <div class="stat-card minor-c"><div class="stat-value">{{.MinorCount}}</div><div class="stat-label">Minor Updates</div></div>
-  <div class="stat-card patch-c"><div class="stat-value">{{.PatchCount}}</div><div class="stat-label">Patch Updates</div></div>
-  <div class="stat-card break-c"><div class="stat-value">{{.BreakingCount}}</div><div class="stat-label">Breaking Changes</div></div>
-  <div class="stat-card miss-c"><div class="stat-value">{{.BreakingCount}}</div><div class="stat-label">Missed by Renovate / Dependabot</div></div>
-</div>
-
-{{if gt .BreakingCount 0}}
-<div class="callout-miss">
-  <strong>Renovate and Dependabot would miss {{.BreakingCount}} breaking change{{if gt .BreakingCount 1}}s{{end}}.</strong>
-  Those tools bump version numbers but have no knowledge of removed resources, renamed attributes, or behavioral changes.
-  <strong>tfoutdated</strong> detects these issues <em>before</em> they reach your CI pipeline.
-</div>
-{{end}}
-
-<p style="color:var(--accent-blue);font-size:1.05rem;margin:0 0 0.5rem;">{{.Summary}}</p>
-
-<div class="legend">
-  <div class="legend-item"><span class="legend-dot red"></span> Major — likely has breaking changes</div>
-  <div class="legend-item"><span class="legend-dot yellow"></span> Minor — new features, usually safe</div>
-  <div class="legend-item"><span class="legend-dot green"></span> Patch — bug fixes only</div>
-</div>
-
-<!-- Outdated Dependencies -->
-<h2 class="section-title">Outdated Dependencies <span>({{len .Dependencies}} items)</span></h2>
-{{if .Dependencies}}
-<table>
-<thead><tr><th>Dependency</th><th>Current</th><th>Latest</th><th>Update Type</th><th>Impact</th><th>File</th></tr></thead>
-<tbody>
-{{range .Dependencies}}
-<tr>
-  <td class="dep-source">{{.Source}}</td>
-  <td>{{.CurrentVer}}</td>
-  <td>{{.LatestVer}}</td>
-  <td class="{{.UpdateClass}}">{{.UpdateTypeStr}}</td>
-  <td>{{.ImpactStr}}</td>
-  <td class="dep-file">{{.FilePath}}:{{.Line}}</td>
-</tr>
-{{end}}
-</tbody>
-</table>
-{{else}}
-<p style="color:var(--green);">All dependencies are up to date.</p>
-{{end}}
-
-<!-- Breaking Changes with Snippets -->
-{{if .BreakingChanges}}
-<h2 class="section-title">Breaking Changes <span>({{len .BreakingChanges}} detected — scroll down to see exactly what to change)</span></h2>
-
-{{range .BreakingChanges}}
-<div class="bc-card {{.CSSClass}}">
-  <div class="bc-header">
-    <span class="bc-badge {{.CSSClass}}">{{.SeverityStr}}</span>
-    {{if .EffortLevel}}<span class="bc-effort">{{.EffortLevel}}</span>{{end}}
-    {{if .ResourceType}}<span class="bc-resource">{{.ResourceType}}</span>{{end}}
-    {{if .Attribute}}<span style="color:var(--text-muted);font-family:monospace;">.{{.Attribute}}</span>{{end}}
-  </div>
-  <div class="bc-desc">{{.Description}}</div>
-  {{if .MigrationGuide}}<div class="bc-migration">{{.MigrationGuide}}</div>{{end}}
-
-  {{if .RealSnippets}}
-  {{range .RealSnippets}}
-  <div style="margin-top:0.5rem;font-size:0.85rem;color:var(--accent-blue2);">
-    <code>{{.ResourceName}}</code> in <code>{{.AffectedFile}}:{{.AffectedLine}}</code>
-    {{if gt .LinesChanged 0}}<span style="color:var(--text-muted);"> — {{.LinesChanged}} lines to change</span>{{end}}
-  </div>
-  <div class="snippet-container">
-    <div class="snippet-box">
-      <div class="snippet-label before">Before (your code)</div>
-      <div class="snippet-code">{{.Before}}</div>
+  <div class="plan">
+    <p class="plan-line">Plan: <span class="{{if .Deprecated}}n-del{{end}}">{{len .Deprecated}} to replace</span>, <span class="{{if gt .MajorCount 0}}n-del{{end}}">{{.MajorCount}} major</span>, <span class="{{if gt .MinorCount 0}}n-warn{{end}}">{{.MinorCount}} minor</span>, <span class="{{if gt .PatchCount 0}}n-add{{end}}">{{.PatchCount}} patch</span>{{if gt .BreakingCount 0}}, <span class="n-del">{{.BreakingCount}} breaking</span>{{end}}.</p>
+    {{if gt .Total 0}}
+    <div class="bar" role="img" aria-label="{{len .Deprecated}} to replace, {{.MajorCount}} major, {{.MinorCount}} minor, {{.PatchCount}} patch, {{.Current}} current out of {{.Total}}">
+      {{if .Deprecated}}<span class="s-replace" style="flex-grow: {{len .Deprecated}}"></span>{{end}}
+      {{if gt .MajorCount 0}}<span class="s-major" style="flex-grow: {{.MajorCount}}"></span>{{end}}
+      {{if gt .MinorCount 0}}<span class="s-minor" style="flex-grow: {{.MinorCount}}"></span>{{end}}
+      {{if gt .PatchCount 0}}<span class="s-patch" style="flex-grow: {{.PatchCount}}"></span>{{end}}
+      {{if gt .Current 0}}<span class="s-ok" style="flex-grow: {{.Current}}"></span>{{end}}
     </div>
-    <div class="snippet-box">
-      <div class="snippet-label after">After (computed fix)</div>
-      <div class="snippet-code">{{.After}}</div>
-    </div>
-  </div>
-  {{end}}
-  {{else if and .BeforeSnippet .AfterSnippet}}
-  <div class="snippet-container">
-    <div class="snippet-box">
-      <div class="snippet-label before">Before (generic example)</div>
-      <div class="snippet-code">{{.BeforeSnippet}}</div>
-    </div>
-    <div class="snippet-box">
-      <div class="snippet-label after">After (generic example)</div>
-      <div class="snippet-code">{{.AfterSnippet}}</div>
-    </div>
-  </div>
-  {{end}}
-</div>
-{{end}}
-{{end}}
-
-<!-- Recommended Upgrade Paths -->
-{{if .UpgradePaths}}
-<h2 class="section-title">Recommended Upgrade Paths <span>({{len .UpgradePaths}} dependencies)</span></h2>
-{{range .UpgradePaths}}
-<div class="upgrade-block">
-<h3>{{.Name}}</h3>
-{{range $i, $step := .Steps}}
-<div class="step">
-  {{inc $i}}. <span class="{{if $step.Safe}}safe{{else}}unsafe{{end}}">{{$step.From}} &rarr; {{$step.To}}</span>
-  {{if not $step.Safe}} &#9888; potential breaking changes{{end}}
-</div>
-{{end}}
-{{if .NonBreakingTarget}}<p class="safe-target">&#10003; Safe target: {{.NonBreakingTarget}}</p>{{else if .HasBreakingSteps}}<p class="unsafe" style="font-size:0.9rem;margin-top:0.35rem;">&#9888; Breaking changes — review required before upgrading</p>{{end}}
-</div>
-{{end}}
-{{end}}
-
-<!-- Recommendations -->
-{{if .Recommendations}}
-<h2 class="section-title">Recommendations <span>({{len .Recommendations}})</span></h2>
-{{range .Recommendations}}
-<div class="bc-card {{.SevClass}}" style="border-left-width:4px;">
-  <div class="bc-header">
-    <span class="bc-badge {{.SevClass}}">{{.Severity}}</span>
-    <span style="font-weight:600;">{{.Title}}</span>
-  </div>
-  <div class="bc-desc" style="color:var(--text-muted);font-size:0.9rem;">
-    {{range .Details}}<div>{{.}}</div>{{end}}
-  </div>
-  {{if .Fix}}
-  <div style="margin-top:0.8rem;">
-    <strong style="font-size:0.85rem;color:var(--accent-blue);">Changes to make:</strong>
-    {{range .Fix}}
-    <div class="snippet-box" style="margin-top:0.4rem;">
-      {{if .FilePart}}<div style="font-size:0.75rem;color:var(--text-muted);padding:0.3rem 0.75rem;background:var(--bg-tertiary);font-family:monospace;">{{.FilePart}}</div>{{end}}
-      <div class="snippet-code" style="border-top:none;">{{if .OldValue}}<span style="color:var(--red);">- {{.OldValue}}</span>{{end}}
-{{if .NewValue}}<span style="color:var(--green);">+ {{.NewValue}}</span>{{end}}</div>
+    <div class="legend">
+      <span><i class="s-replace" style="background: var(--del)"></i>{{len .Deprecated}} replace</span>
+      <span><i style="background: color-mix(in srgb, var(--del) 55%, var(--warn))"></i>{{.MajorCount}} major</span>
+      <span><i style="background: var(--warn)"></i>{{.MinorCount}} minor</span>
+      <span><i style="background: color-mix(in srgb, var(--add) 70%, var(--paper))"></i>{{.PatchCount}} patch</span>
+      <span><i style="background: var(--add)"></i>{{.Current}} current</span>
+      <span>of {{.Total}} dependencies</span>
     </div>
     {{end}}
+    {{if .Deprecated}}<p class="plan-hint">Start with the replacements: a newer version of a deprecated module still gets no fixes.</p>
+    {{else if .Upgrades}}<p class="plan-hint">Preview every change with <code>tfoutdated plan</code>, then apply with <code>tfoutdated apply</code>.</p>
+    {{else}}<p class="plan-hint">Nothing to do. Every dependency is current and maintained.</p>{{end}}
   </div>
+</header>
+
+{{if .Deprecated}}
+<section id="replace">
+  <div class="sec-head">
+    <h2>Replace <span class="n">{{len .Deprecated}}</span></h2>
+    <p>These modules are deprecated, archived or moved upstream. Each block shows the line to change and links to the proof.</p>
+  </div>
+  {{range .Deprecated}}
+  <article class="item">
+    <div class="item-head">
+      <div class="file">{{if .FileLink}}<a href="{{.FileLink}}">{{.FilePath}}:{{.Line}}</a>{{else}}{{.FilePath}}:{{.Line}}{{end}} · <b>module "{{.Name}}"</b></div>
+      <div class="actions">
+        {{if .OldLink}}<a class="btn" href="{{.OldLink}}" target="_blank" rel="noopener">Current module</a>{{end}}
+        {{if .OldRepo}}<a class="btn" href="{{.OldRepo}}/releases" target="_blank" rel="noopener">Release notes</a>{{end}}
+        {{if .NewLink}}<a class="btn go" href="{{.NewLink}}" target="_blank" rel="noopener">Replacement</a>{{end}}
+      </div>
+    </div>
+    <dl class="answers">
+      <dt>Changed</dt><dd><span class="tag del">DEPRECATED</span>The module no longer receives updates{{if .CurrentVer}}; you are on {{.CurrentVer}}{{end}}.</dd>
+      <dt>Impact</dt><dd>No bug or security fixes from now on.{{if .ReplacedBy}} The replacement can take different inputs, so compare them on its module page before switching.{{end}}</dd>
+      <dt>Do this</dt><dd>{{if .ReplacedBy}}Change the source in <code>{{.FilePath}}</code>, then run <code>terraform init -upgrade</code> and <code>terraform plan</code>.{{else}}No replacement is named upstream. Pick a maintained module, or fork this one if you depend on it.{{end}}</dd>
+    </dl>
+    <div class="diff"><pre><span class="l ctx">  module "{{.Name}}" {</span><span class="l del">-   source  = "{{.Source}}"</span>{{if .OldVersion}}<span class="l del">-   version = "{{.OldVersion}}"</span>{{end}}{{if .ReplacedBy}}<span class="l add">+   source  = "{{.ReplacedBy}}"</span>{{if .NewVersion}}<span class="l add">+   version = "{{.NewVersion}}"</span>{{end}}{{else}}<span class="l note">    # no replacement named upstream</span>{{end}}<span class="l ctx">  }</span></pre></div>
+    {{if .Evidence}}
+    <div class="evidence">
+      <h3>Check it yourself</h3>
+      <ul>{{range .Evidence}}<li><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="7" fill="var(--del-bg)" stroke="var(--del)" stroke-width="1.2"/><path d="M5 8.2l2 2 4-4.4" fill="none" stroke="var(--del)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg><span>{{if .URL}}<a href="{{.URL}}" target="_blank" rel="noopener">{{.Label}}</a> <span class="src">{{.URL}}</span>{{else}}{{.Label}}{{end}}</span></li>{{end}}</ul>
+    </div>
+    {{end}}
+  </article>
   {{end}}
-</div>
-{{end}}
-{{end}}
-
-<!-- Provider Impact Analysis -->
-{{if .ProviderImpact}}
-<h2 class="section-title">Impact Analysis <span>{{.ProviderImpact.TargetProvider}} → {{.ProviderImpact.TargetVersion}}</span></h2>
-
-<div class="exec-summary" style="margin-bottom:1.5rem;">
-  <div class="stat-card patch-c"><div class="stat-value">{{.ProviderImpact.Compatible}}</div><div class="stat-label">Compatible</div></div>
-  {{if gt .ProviderImpact.NeedUpgrade 0}}<div class="stat-card minor-c"><div class="stat-value">{{.ProviderImpact.NeedUpgrade}}</div><div class="stat-label">Need Upgrade</div></div>{{end}}
-  {{if gt .ProviderImpact.Incompatible 0}}<div class="stat-card major-c"><div class="stat-value">{{.ProviderImpact.Incompatible}}</div><div class="stat-label">Incompatible</div></div>{{end}}
-</div>
-
-{{range .ProviderImpact.Results}}
-{{if .RequiresUpgrade}}
-<div style="background:var(--bg-secondary);border-radius:8px;padding:1rem;margin-bottom:0.8rem;border:1px solid var(--border);border-left:3px solid var(--yellow);">
-  <h3 style="color:var(--yellow);font-size:0.9rem;">{{.Module}}</h3>
-  <div class="snippet-code" style="margin-top:0.5rem;">
-<span style="color:var(--red);">- version = "{{.CurrentModuleVer}}"</span>
-{{if .MinCompatibleVer}}<span style="color:var(--green);">+ version = "{{.MinCompatibleVer}}"</span>{{end}}</div>
-</div>
-{{end}}
+</section>
 {{end}}
 
-<table>
-<thead><tr><th>Module</th><th>Version</th><th>Latest</th><th>Status</th></tr></thead>
-<tbody>
-{{range .ProviderImpact.Results}}
-<tr>
-  <td class="dep-source">{{.Module}}</td>
-  <td>{{.CurrentModuleVer}}</td>
-  <td>{{.LatestModuleVer}}</td>
-  <td><span class="bc-badge {{.StatusClass}}">{{.StatusLabel}}</span></td>
-</tr>
-{{end}}
-</tbody>
-</table>
-
-<div style="margin-top:1.5rem;">
-  <div class="callout-miss" style="{{if eq .ProviderImpact.VerdictClass "safe"}}border-color:var(--green);background:var(--green-bg);color:var(--green);{{else if eq .ProviderImpact.VerdictClass "blocked"}}border-color:var(--red);color:var(--red);{{end}}">
-    <strong>{{.ProviderImpact.VerdictText}}</strong>
+{{if .Upgrades}}
+<section id="upgrade">
+  <div class="sec-head">
+    <h2>Upgrade <span class="n">{{len .Upgrades}}</span></h2>
+    <p>Newer versions are published. <code>tfoutdated apply</code> makes these edits for you; <code>-safe</code> stops before breaking versions.</p>
   </div>
-</div>
+  {{range .Upgrades}}
+  <article class="item">
+    <div class="item-head">
+      <div class="file">{{if .FileLink}}<a href="{{.FileLink}}">{{.FilePath}}:{{.Line}}</a>{{else}}{{.FilePath}}:{{.Line}}{{end}} · <b>{{if .IsModule}}module "{{.Name}}"{{else}}provider "{{.Name}}"{{end}}</b></div>
+      <div class="actions">
+        {{if .Link}}<a class="btn" href="{{.Link}}" target="_blank" rel="noopener">{{if .IsModule}}Module{{else}}Provider{{end}} page</a>{{end}}
+        {{if .LatestLink}}<a class="btn go" href="{{.LatestLink}}" target="_blank" rel="noopener">{{.LatestVer}}</a>{{end}}
+      </div>
+    </div>
+    <dl class="answers">
+      <dt>Changed</dt><dd><span class="tag {{if eq .UpdateClass "major"}}del{{else if eq .UpdateClass "minor"}}warn{{else}}add{{end}}">{{.UpdateTypeStr}}</span>{{.CurrentVer}} → {{.LatestVer}} <span class="muted">· {{.Source}}</span></dd>
+      <dt>Impact</dt><dd>{{if .BreakCount}}{{.BreakCount}} breaking change{{if gt .BreakCount 1}}s{{end}}, listed under <a href="#breaking">Breaking changes</a>.{{else if eq .UpdateClass "major"}}Major version: read the release notes before upgrading.{{else}}No known breaking change.{{end}}</dd>
+      <dt>Do this</dt><dd>{{if .SafeTarget}}Upgrade to {{.SafeTarget}} first, which has no known breaking change, then review the rest.{{else}}Change the version in <code>{{.FilePath}}</code>, then run <code>terraform init -upgrade</code>.{{end}}</dd>
+    </dl>
+    <div class="diff"><pre><span class="l del">-   version = "{{.OldConstraint}}"</span><span class="l add">+   version = "{{.NewConstraint}}"</span></pre></div>
+  </article>
+  {{end}}
+</section>
 {{end}}
 
-<!-- Tool Comparison Matrix -->
-<h2 class="section-title">Tool Comparison Matrix</h2>
-<table class="comparison-table">
-<thead>
-<tr>
-  <th>Feature</th>
-  <th class="tfoutdated-col">tfoutdated</th>
-  <th>Renovate</th>
-  <th>Dependabot</th>
-  <th>tfupdate</th>
-  <th>tflint</th>
-</tr>
-</thead>
-<tbody>
-<tr><td>Detect outdated providers</td><td class="tfoutdated-col c-full">&#10004; Full</td><td class="c-full">&#10004; Full</td><td class="c-full">&#10004; Full</td><td class="c-full">&#10004; Full</td><td class="c-none">&#10008; No</td></tr>
-<tr><td>Detect outdated modules</td><td class="tfoutdated-col c-full">&#10004; Full</td><td class="c-partial">&#9888; Partial</td><td class="c-partial">&#9888; Partial</td><td class="c-full">&#10004; Full</td><td class="c-none">&#10008; No</td></tr>
-<tr><td>Azure Verified Modules (AVM)</td><td class="tfoutdated-col c-full">&#10004; Native</td><td class="c-partial">&#9888; Generic</td><td class="c-partial">&#9888; Generic</td><td class="c-none">&#10008; No</td><td class="c-none">&#10008; No</td></tr>
-<tr><td>Breaking change detection</td><td class="tfoutdated-col c-full">&#10004; Deep</td><td class="c-none">&#10008; None</td><td class="c-none">&#10008; None</td><td class="c-none">&#10008; None</td><td class="c-partial">&#9888; Rules only</td></tr>
-<tr><td>Code snippets (before/after)</td><td class="tfoutdated-col c-full">&#10004; Built-in</td><td class="c-none">&#10008; None</td><td class="c-none">&#10008; None</td><td class="c-none">&#10008; None</td><td class="c-none">&#10008; None</td></tr>
-<tr><td>Impact analysis</td><td class="tfoutdated-col c-full">&#10004; File-level</td><td class="c-none">&#10008; None</td><td class="c-none">&#10008; None</td><td class="c-none">&#10008; None</td><td class="c-none">&#10008; None</td></tr>
-<tr><td>Safe upgrade paths</td><td class="tfoutdated-col c-full">&#10004; Multi-step</td><td class="c-none">&#10008; None</td><td class="c-none">&#10008; None</td><td class="c-none">&#10008; None</td><td class="c-none">&#10008; None</td></tr>
-<tr><td>Version alignment check</td><td class="tfoutdated-col c-full">&#10004; Cross-repo</td><td class="c-none">&#10008; None</td><td class="c-none">&#10008; None</td><td class="c-none">&#10008; None</td><td class="c-none">&#10008; None</td></tr>
-<tr><td>Auto-fix (non-breaking)</td><td class="tfoutdated-col c-full">&#10004; HCL-aware</td><td class="c-full">&#10004; PR-based</td><td class="c-full">&#10004; PR-based</td><td class="c-full">&#10004; Rewrite</td><td class="c-none">&#10008; None</td></tr>
-<tr><td>Migration guides</td><td class="tfoutdated-col c-full">&#10004; Built-in</td><td class="c-none">&#10008; None</td><td class="c-none">&#10008; None</td><td class="c-none">&#10008; None</td><td class="c-none">&#10008; None</td></tr>
-<tr><td>Offline / local-first</td><td class="tfoutdated-col c-full">&#10004; Yes</td><td class="c-none">&#10008; SaaS</td><td class="c-none">&#10008; SaaS</td><td class="c-full">&#10004; Yes</td><td class="c-full">&#10004; Yes</td></tr>
-<tr><td>CI/CD integration</td><td class="tfoutdated-col c-full">&#10004; Exit codes</td><td class="c-full">&#10004; Full</td><td class="c-full">&#10004; Full</td><td class="c-full">&#10004; Full</td><td class="c-full">&#10004; Full</td></tr>
-<tr><td>Pre-commit hook</td><td class="tfoutdated-col c-full">&#10004; Yes</td><td class="c-none">&#10008; No</td><td class="c-none">&#10008; No</td><td class="c-full">&#10004; Yes</td><td class="c-full">&#10004; Yes</td></tr>
-<tr><td>AWS / GCP support</td><td class="tfoutdated-col c-planned">&#8594; Planned</td><td class="c-full">&#10004; Full</td><td class="c-full">&#10004; Full</td><td class="c-full">&#10004; Full</td><td class="c-full">&#10004; Full</td></tr>
-<tr><td>Knowledge base (curated)</td><td class="tfoutdated-col c-full">&#10004; azurerm, azuread, azapi</td><td class="c-none">&#10008; None</td><td class="c-none">&#10008; None</td><td class="c-none">&#10008; None</td><td class="c-partial">&#9888; Plugin</td></tr>
-</tbody>
-</table>
+{{if .BreakingChanges}}
+<section id="breaking">
+  <div class="sec-head">
+    <h2>Breaking changes <span class="n">{{len .BreakingChanges}}</span></h2>
+    <p>What changes in your code when you upgrade.</p>
+  </div>
+  {{range .BreakingChanges}}
+  <article class="item">
+    <div class="item-head"><div class="file"><span class="tag {{if eq .CSSClass "breaking"}}del{{else if eq .CSSClass "warning"}}warn{{else}}add{{end}}">{{.SeverityStr}}</span>{{if .ResourceType}}<b>{{.ResourceType}}{{if .Attribute}}.{{.Attribute}}{{end}}</b>{{end}}</div>{{if .EffortLevel}}<div class="muted" style="font-size: 13px">{{.EffortLevel}}</div>{{end}}</div>
+    <div class="bc-body">
+      <p>{{.Description}}</p>
+      {{if .MigrationGuide}}<p class="muted">{{.MigrationGuide}}</p>{{end}}
+      {{if .RealSnippets}}{{range .RealSnippets}}
+      <p class="muted"><code>{{.ResourceName}}</code> in <code>{{.AffectedFile}}:{{.AffectedLine}}</code>{{if gt .LinesChanged 0}} · {{.LinesChanged}} lines{{end}}</p>
+      <div class="twocol"><div class="diff"><div class="cap">Your code</div><pre>{{.Before}}</pre></div><div class="diff"><div class="cap">After the fix</div><pre>{{.After}}</pre></div></div>
+      {{end}}{{else if and .BeforeSnippet .AfterSnippet}}
+      <div class="twocol"><div class="diff"><div class="cap">Before</div><pre>{{.BeforeSnippet}}</pre></div><div class="diff"><div class="cap">After</div><pre>{{.AfterSnippet}}</pre></div></div>
+      {{end}}
+    </div>
+  </article>
+  {{end}}
+</section>
+{{end}}
 
-<!-- Why tfoutdated? -->
-<div class="why-section">
-  <h2>Why tfoutdated?</h2>
-  <ul>
-    <li><strong>Shows you exactly what to change.</strong> Each breaking change comes with side-by-side code snippets: your current code on the left, the fixed version on the right. No more guessing what "resource removed" means for your specific config.</li>
-    <li><strong>Breaking-change awareness that other tools lack.</strong> Renovate and Dependabot bump version numbers but have zero insight into Terraform provider schema changes. tfoutdated ships a curated knowledge base of removed attributes, renamed resources, and behavioral changes.</li>
-    <li><strong>Safe, multi-step upgrade paths.</strong> Instead of jumping straight to the latest major version, tfoutdated recommends an incremental upgrade sequence &mdash; highlighting exactly which steps carry breaking changes.</li>
-    <li><strong>File-level impact analysis.</strong> Every breaking change is mapped back to the specific <code>.tf</code> files and resources it affects.</li>
-    <li><strong>Offline, local-first, and CI-friendly.</strong> A single binary that returns structured exit codes, JSON, or this HTML report &mdash; perfect for pre-commit hooks and CI pipelines.</li>
-  </ul>
-</div>
+{{if .Recommendations}}
+<section id="recommendations">
+  <div class="sec-head"><h2>Recommendations <span class="n">{{len .Recommendations}}</span></h2></div>
+  {{range .Recommendations}}
+  <article class="item">
+    <div class="item-head"><div class="file"><span class="tag {{if or (eq .SevClass "critical") (eq .SevClass "high")}}del{{else if eq .SevClass "medium"}}warn{{else}}add{{end}}">{{.Severity}}</span><b>{{.Title}}</b></div></div>
+    <div class="bc-body">
+      {{range .Details}}<p class="muted">{{.}}</p>{{end}}
+      {{if .Fix}}<div class="diff" style="margin: 0"><pre>{{range .Fix}}{{if .FilePart}}<span class="l ctx">  {{.FilePart}}</span>{{end}}{{if .OldValue}}<span class="l del">-   {{.OldValue}}</span>{{end}}{{if .NewValue}}<span class="l add">+   {{.NewValue}}</span>{{end}}{{end}}</pre></div>{{end}}
+    </div>
+  </article>
+  {{end}}
+</section>
+{{end}}
+
+{{if .ProviderImpact}}
+<section id="impact">
+  <div class="sec-head">
+    <h2>Provider upgrade <span class="n">{{.ProviderImpact.TargetProvider}} → {{.ProviderImpact.TargetVersion}}</span></h2>
+    <p>{{.ProviderImpact.VerdictText}}</p>
+  </div>
+  <article class="item">
+    <table>
+      <thead><tr><th>Module</th><th>Version</th><th>Status</th></tr></thead>
+      <tbody>{{range .ProviderImpact.Results}}<tr><td><code>{{.Module}}</code></td><td><code>{{.CurrentModuleVer}}{{if .LatestModuleVer}} → {{.LatestModuleVer}}{{end}}</code></td><td><span class="tag {{if eq .StatusClass "ok"}}add{{else if eq .StatusClass "possible"}}warn{{else}}del{{end}}">{{.StatusLabel}}</span></td></tr>{{end}}</tbody>
+    </table>
+  </article>
+</section>
+{{end}}
+
+{{if .UpgradePaths}}
+<section id="paths">
+  <div class="sec-head">
+    <h2>Upgrade paths <span class="n">{{len .UpgradePaths}}</span></h2>
+    <p>Step by step. Red steps carry breaking changes.</p>
+  </div>
+  {{range .UpgradePaths}}
+  <article class="item">
+    <div class="item-head"><div class="file"><b>{{.Name}}</b></div>{{if .NonBreakingTarget}}<div class="muted" style="font-size: 13px">safe target {{.NonBreakingTarget}}</div>{{end}}</div>
+    <div class="path">{{range $i, $s := .Steps}}{{if eq $i 0}}<span>{{$s.From}}</span>{{end}}<span class="{{if $s.Safe}}ok{{else}}bad{{end}}">→ {{$s.To}}</span>{{end}}</div>
+  </article>
+  {{end}}
+</section>
+{{end}}
 
 <footer>
-  Generated by <a href="https://github.com/anasskartit/tfoutdated">tfoutdated</a>
-  &mdash; Terraform dependency intelligence for teams that ship infrastructure safely.
+  <span>Generated by <a href="https://github.com/anasskartit/tfoutdated">tfoutdated</a></span>
+  <span>Re-run: <code>tfoutdated check</code></span>
 </footer>
 
 </div>
@@ -422,26 +321,71 @@ const htmlTemplate = `<!DOCTYPE html>
 </html>`
 
 type htmlData struct {
-	Summary         string
-	Dependencies    []htmlDep
+	GeneratedAt string
+	Target      string
+	TargetLink  string
+
+	// Plan line and distribution bar, all counts of dependencies.
+	Total   int
+	Current int
+
+	Deprecated      []htmlDeprecated
+	Upgrades        []htmlUpgrade
 	BreakingChanges []htmlBreaking
 	UpgradePaths    []analyzer.UpgradePath
 	Recommendations []htmlRecommendation
 	ProviderImpact  *htmlProviderImpact
 
-	TotalDeps     int
 	MajorCount    int
 	MinorCount    int
 	PatchCount    int
 	BreakingCount int
 }
 
+// htmlDeprecated is one "stop using this, use that" card. Every claim on it
+// links to a page the reader can open to check it.
+type htmlDeprecated struct {
+	Name       string
+	IsModule   bool
+	Source     string
+	CurrentVer string
+	FilePath   string
+	Line       int
+	FileLink   template.URL
+	OldLink    string // registry page or repository of the deprecated module
+	OldRepo    string // repository, for release notes
+	ReplacedBy string
+	NewVersion string // version to pin on the replacement
+	OldVersion string // version line as written today, if any
+	NewLink    string
+	Evidence   []lifecycle.Evidence
+}
+
+type htmlUpgrade struct {
+	Name          string
+	IsModule      bool
+	Source        string
+	OldConstraint string // the version line as written
+	NewConstraint string // the same line pointing at the target version
+	SafeTarget    string // newest version without known breaking changes, when the latest breaks
+	Link          string // registry page of the module or provider
+	CurrentVer    string
+	LatestVer     string
+	LatestLink    string // registry page at the latest version
+	UpdateClass   string
+	UpdateTypeStr string
+	BreakCount    int
+	FilePath      string
+	Line          int
+	FileLink      template.URL
+}
+
 type htmlRecommendation struct {
-	Severity    string
-	SevClass    string
-	Title       string
-	Details     []string
-	Fix         []htmlDiffItem
+	Severity string
+	SevClass string
+	Title    string
+	Details  []string
+	Fix      []htmlDiffItem
 }
 
 type htmlDiffItem struct {
@@ -471,17 +415,6 @@ type htmlProviderImpactResult struct {
 	MinCompatibleVer string
 }
 
-type htmlDep struct {
-	Source        string
-	CurrentVer   string
-	LatestVer    string
-	UpdateClass  string
-	UpdateTypeStr string
-	ImpactStr    string
-	FilePath     string
-	Line         int
-}
-
 type htmlBreaking struct {
 	SeverityStr    string
 	CSSClass       string
@@ -504,53 +437,168 @@ type htmlRealSnippet struct {
 	After        string
 }
 
+// fileLink opens a file at a line in VS Code; "" when the path cannot be made
+// absolute. Readers on other editors still see the path itself.
+//
+// html/template rejects the vscode: scheme as unsafe; the URL is built here
+// from a local path, so it is marked trusted rather than interpolated raw.
+func fileLink(path string, line int) template.URL {
+	if path == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return ""
+	}
+	u := url.URL{Scheme: "vscode", Path: "file/" + strings.TrimPrefix(filepath.ToSlash(abs), "/") + fmt.Sprintf(":%d", line)}
+	return template.URL(u.String())
+}
+
+// constraintChange returns the version line as written and the same line
+// pointing at the target, keeping the operator the author chose ("~> 0.14.0"
+// becomes "~> 0.14.1"). A range ("> 1, < 2") is replaced by the bare target.
+func constraintChange(raw, current, target string) (string, string) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		raw = current
+	}
+	if strings.Contains(raw, ",") {
+		return raw, target
+	}
+	op := strings.TrimRight(strings.TrimRight(raw, "0123456789.-+abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"), " ")
+	if op == "" {
+		return raw, target
+	}
+	return raw, op + " " + target
+}
+
+// displayPath shows a file relative to the scanned directory, which is how
+// the reader knows it; the link keeps the full path.
+func displayPath(base, path string) string {
+	if base == "" || !filepath.IsAbs(path) {
+		return path
+	}
+	if rel, err := filepath.Rel(base, path); err == nil && !strings.HasPrefix(rel, "..") {
+		return filepath.ToSlash(rel)
+	}
+	return path
+}
+
+// depLinks returns the page of a dependency and the page of a given version.
+func depLinks(dep analyzer.DependencyAnalysis) (page, latest string) {
+	if dep.IsModule {
+		return lifecycle.RegistryURL(dep.Source, ""), lifecycle.RegistryURL(dep.Source, dep.LatestVer)
+	}
+	src := dep.Source
+	if !strings.Contains(src, "/") && dep.Namespace != "" {
+		src = dep.Namespace + "/" + dep.Name
+	}
+	return lifecycle.ProviderURL(src, ""), lifecycle.ProviderURL(src, dep.LatestVer)
+}
+
 func (r *HTMLRenderer) Render(w io.Writer, analysis *analyzer.Analysis) error {
 	data := htmlData{
-		Summary: analysis.Summary(),
+		GeneratedAt: time.Now().Format("2006-01-02 15:04"),
+		Target:      analysis.Target,
+	}
+	if strings.HasPrefix(analysis.Target, "http") {
+		data.TargetLink = analysis.Target
 	}
 
-	data.TotalDeps = len(analysis.Dependencies)
-	for _, dep := range analysis.Dependencies {
-		switch dep.UpdateType {
-		case resolver.UpdateMajor:
-			data.MajorCount++
-		case resolver.UpdateMinor:
-			data.MinorCount++
-		case resolver.UpdatePatch:
-			data.PatchCount++
+	// Newest non-breaking version per dependency, from the upgrade paths.
+	safeTargets := map[string]string{}
+	for _, up := range analysis.UpgradePaths {
+		if up.HasBreakingSteps() && up.NonBreakingTarget != "" {
+			safeTargets[up.Name] = up.NonBreakingTarget
 		}
 	}
-	data.BreakingCount = len(analysis.BreakingChanges)
+
+	needsAction := 0
+	for _, dep := range analysis.Dependencies {
+		if dep.Deprecated || dep.UpdateType != resolver.UpdateNone {
+			needsAction++
+		}
+	}
+	data.Total = analysis.TotalDeps
+	if data.Total < needsAction {
+		data.Total = needsAction
+	}
+	data.Current = data.Total - needsAction
 
 	for _, dep := range analysis.Dependencies {
-		updateClass := "patch"
-		switch dep.UpdateType.String() {
-		case "MAJOR":
-			updateClass = "major"
-		case "MINOR":
-			updateClass = "minor"
-		}
-
-		impact := "none"
 		breakCount := 0
 		for _, bc := range analysis.BreakingChanges {
-			if bc.Provider == dep.Name || bc.Provider == dep.Source {
+			if (bc.Provider == dep.Name || bc.Provider == dep.Source) && bc.IsBreaking() {
 				breakCount++
 			}
 		}
-		if breakCount > 0 {
-			impact = fmt.Sprintf("%d breaking", breakCount)
+
+		if dep.Deprecated {
+			old, _ := depLinks(dep)
+			d := htmlDeprecated{
+				Name:       dep.Name,
+				IsModule:   dep.IsModule,
+				Source:     dep.Source,
+				CurrentVer: dep.CurrentVer,
+				FilePath:   displayPath(analysis.Target, dep.FilePath),
+				Line:       dep.Line,
+				FileLink:   fileLink(dep.FilePath, dep.Line),
+				OldLink:    old,
+				ReplacedBy: dep.ReplacedBy,
+				NewVersion: dep.ReplacedByVersion,
+				OldVersion: dep.Constraint,
+				NewLink:    lifecycle.RegistryURL(dep.ReplacedBy, dep.ReplacedByVersion),
+				Evidence:   dep.Evidence,
+			}
+			if len(d.Evidence) == 0 && dep.DeprecationReason != "" {
+				// No page to link to: still say why, as plain labels.
+				for _, reason := range strings.Split(dep.DeprecationReason, "; ") {
+					d.Evidence = append(d.Evidence, lifecycle.Evidence{Label: reason})
+				}
+			}
+			for _, e := range dep.Evidence {
+				if strings.HasPrefix(e.URL, "https://github.com/") && d.OldRepo == "" {
+					d.OldRepo = repoRoot(e.URL)
+				}
+			}
+			data.Deprecated = append(data.Deprecated, d)
 		}
 
-		data.Dependencies = append(data.Dependencies, htmlDep{
+		// A deprecated module is counted and shown once, under Replace:
+		// upgrading it does not help.
+		if dep.Deprecated || dep.UpdateType == resolver.UpdateNone {
+			continue
+		}
+		class := "patch"
+		switch dep.UpdateType {
+		case resolver.UpdateMajor:
+			class = "major"
+			data.MajorCount++
+		case resolver.UpdateMinor:
+			class = "minor"
+			data.MinorCount++
+		default:
+			data.PatchCount++
+		}
+		page, latest := depLinks(dep)
+		oldC, newC := constraintChange(dep.Constraint, dep.CurrentVer, dep.LatestVer)
+		data.Upgrades = append(data.Upgrades, htmlUpgrade{
+			Name:          dep.Name,
+			IsModule:      dep.IsModule,
+			OldConstraint: oldC,
+			NewConstraint: newC,
+			SafeTarget:    safeTargets[dep.Name],
 			Source:        dep.Source,
+			Link:          page,
 			CurrentVer:    dep.CurrentVer,
 			LatestVer:     dep.LatestVer,
-			UpdateClass:   updateClass,
+			LatestLink:    latest,
+			UpdateClass:   class,
 			UpdateTypeStr: dep.UpdateType.String(),
-			ImpactStr:     impact,
-			FilePath:      dep.FilePath,
+			BreakCount:    breakCount,
+			FilePath:      displayPath(analysis.Target, dep.FilePath),
 			Line:          dep.Line,
+			FileLink:      fileLink(dep.FilePath, dep.Line),
 		})
 	}
 
@@ -558,6 +606,7 @@ func (r *HTMLRenderer) Render(w io.Writer, analysis *analyzer.Analysis) error {
 		cssClass := "info"
 		if bc.Severity >= breaking.SeverityBreaking {
 			cssClass = "breaking"
+			data.BreakingCount++
 		} else if bc.Severity >= breaking.SeverityWarning {
 			cssClass = "warning"
 		}
@@ -565,11 +614,11 @@ func (r *HTMLRenderer) Render(w io.Writer, analysis *analyzer.Analysis) error {
 		effortLabel := ""
 		switch bc.EffortLevel {
 		case "small":
-			effortLabel = "Low effort — 1-line change"
+			effortLabel = "low effort, one-line change"
 		case "medium":
-			effortLabel = "Medium effort — a few attributes"
+			effortLabel = "medium effort, a few attributes"
 		case "large":
-			effortLabel = "High effort — resource rewrite"
+			effortLabel = "high effort, resource rewrite"
 		}
 
 		hb := htmlBreaking{
@@ -611,21 +660,10 @@ func (r *HTMLRenderer) Render(w io.Writer, analysis *analyzer.Analysis) error {
 
 	data.UpgradePaths = analysis.UpgradePaths
 
-	// Recommendations
 	for _, rec := range analysis.Recommendations {
-		sevClass := "sev-low"
-		switch rec.Severity {
-		case "critical":
-			sevClass = "sev-critical"
-		case "high":
-			sevClass = "sev-high"
-		case "medium":
-			sevClass = "sev-medium"
-		}
-
 		hr := htmlRecommendation{
 			Severity: strings.ToUpper(rec.Severity),
-			SevClass: sevClass,
+			SevClass: strings.ToLower(rec.Severity), // critical, high, medium, low: styled in the template
 			Title:    rec.Title,
 			Details:  rec.Details,
 		}
@@ -654,7 +692,6 @@ func (r *HTMLRenderer) Render(w io.Writer, analysis *analyzer.Analysis) error {
 		data.Recommendations = append(data.Recommendations, hr)
 	}
 
-	// Provider Impact
 	if analysis.ProviderImpact != nil {
 		imp := analysis.ProviderImpact
 		hi := &htmlProviderImpact{
@@ -667,32 +704,30 @@ func (r *HTMLRenderer) Render(w io.Writer, analysis *analyzer.Analysis) error {
 
 		if imp.NeedUpgrade == 0 && imp.Incompatible == 0 {
 			hi.VerdictClass = "safe"
-			hi.VerdictText = fmt.Sprintf("Safe to upgrade %s to %s — all modules compatible.", imp.TargetProvider, imp.TargetVersion)
+			hi.VerdictText = fmt.Sprintf("Safe to upgrade %s to %s: all modules are compatible.", imp.TargetProvider, imp.TargetVersion)
 		} else if imp.Incompatible > 0 {
 			hi.VerdictClass = "blocked"
-			hi.VerdictText = fmt.Sprintf("Cannot upgrade %s to %s — %d module(s) have no compatible version.", imp.TargetProvider, imp.TargetVersion, imp.Incompatible)
+			hi.VerdictText = fmt.Sprintf("Cannot upgrade %s to %s yet: %d module(s) have no compatible version.", imp.TargetProvider, imp.TargetVersion, imp.Incompatible)
 		} else {
 			hi.VerdictClass = "possible"
 			hi.VerdictText = fmt.Sprintf("Upgrade possible after updating %d module(s).", imp.NeedUpgrade)
 		}
 
-		for _, r := range imp.Results {
+		for _, res := range imp.Results {
 			hr := htmlProviderImpactResult{
-				Module:           r.Module,
-				CurrentModuleVer: r.CurrentModuleVer,
-				LatestModuleVer:  r.LatestModuleVer,
-				RequiresUpgrade:  r.RequiresModuleUpgrade,
-				MinCompatibleVer: r.MinCompatibleVer,
+				Module:           res.Module,
+				CurrentModuleVer: res.CurrentModuleVer,
+				LatestModuleVer:  res.LatestModuleVer,
+				RequiresUpgrade:  res.RequiresModuleUpgrade,
+				MinCompatibleVer: res.MinCompatibleVer,
 			}
-			if r.Compatible && !r.RequiresModuleUpgrade {
-				hr.StatusClass = "status-ok"
-				hr.StatusLabel = "compatible"
-			} else if r.RequiresModuleUpgrade && r.MinCompatibleVer != "" {
-				hr.StatusClass = "status-minor"
-				hr.StatusLabel = "upgrade to " + r.MinCompatibleVer
-			} else {
-				hr.StatusClass = "status-major"
-				hr.StatusLabel = "incompatible"
+			switch {
+			case res.Compatible && !res.RequiresModuleUpgrade:
+				hr.StatusClass, hr.StatusLabel = "ok", "compatible"
+			case res.RequiresModuleUpgrade && res.MinCompatibleVer != "":
+				hr.StatusClass, hr.StatusLabel = "possible", "upgrade to "+res.MinCompatibleVer
+			default:
+				hr.StatusClass, hr.StatusLabel = "blocked", "incompatible"
 			}
 			hi.Results = append(hi.Results, hr)
 		}
@@ -700,14 +735,19 @@ func (r *HTMLRenderer) Render(w io.Writer, analysis *analyzer.Analysis) error {
 		data.ProviderImpact = hi
 	}
 
-	funcMap := template.FuncMap{
-		"inc": func(i int) int { return i + 1 },
-	}
-
-	tmpl, err := template.New("report").Funcs(funcMap).Parse(htmlTemplate)
+	tmpl, err := template.New("report").Parse(htmlTemplate)
 	if err != nil {
 		return fmt.Errorf("parsing HTML template: %w", err)
 	}
-
 	return tmpl.Execute(w, data)
+}
+
+// repoRoot trims a GitHub URL to "https://github.com/owner/repo".
+func repoRoot(u string) string {
+	rest := strings.TrimPrefix(u, "https://github.com/")
+	parts := strings.SplitN(rest, "/", 3)
+	if len(parts) < 2 {
+		return ""
+	}
+	return "https://github.com/" + parts[0] + "/" + strings.SplitN(parts[1], "#", 2)[0]
 }

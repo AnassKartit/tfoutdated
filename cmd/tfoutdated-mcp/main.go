@@ -18,17 +18,30 @@ import (
 	"github.com/anasskartit/tfoutdated/internal/output"
 	"github.com/anasskartit/tfoutdated/internal/recommend"
 	"github.com/anasskartit/tfoutdated/internal/resolver"
-	"github.com/anasskartit/tfoutdated/internal/schemadiff"
 	"github.com/anasskartit/tfoutdated/internal/scanner"
+	"github.com/anasskartit/tfoutdated/internal/schemadiff"
 )
 
 var version = "dev"
+
+// instructions tell a coding agent when each tool is worth calling. Agents read
+// them at connection time, so they are short and action-first.
+const instructions = `tfoutdated keeps Terraform dependencies current and catches modules that are deprecated, archived or moved upstream.
+
+When to call what:
+- Before writing or upgrading a module block: tfoutdated_module_status with the module source. If deprecated, do not use it; use replaced_by when given.
+- To review a Terraform directory: tfoutdated_scan. Report deprecated modules first (with replaced_by and deprecation_reason), then major upgrades and breaking changes.
+- Before upgrading a provider: tfoutdated_impact with the target version.
+- For a summary a team can act on: tfoutdated_recommend; for a shareable file: tfoutdated_html_report.
+
+All tools except tfoutdated_html_report are read-only. To apply upgrades, the user runs: tfoutdated plan, then tfoutdated apply.`
 
 func main() {
 	s := server.NewMCPServer(
 		"tfoutdated",
 		version,
 		server.WithToolCapabilities(false),
+		server.WithInstructions(instructions),
 	)
 
 	// Tool 1: scan (read-only)
@@ -115,6 +128,19 @@ func main() {
 	)
 	s.AddTool(htmlReportTool, handleHTMLReport)
 
+	// Tool 6: one module's lifecycle (read-only). Meant to be called before
+	// writing a module block, so generated code never starts on a dead module.
+	moduleStatusTool := mcp.NewTool("tfoutdated_module_status",
+		mcp.WithDescription("Check one Terraform module source before using it: latest version, and whether it is deprecated, archived or moved upstream (Terraform Registry, GitHub, Azure Verified Modules index), with the replacement module when one is named. Call this before adding or upgrading a module block."),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithString("source",
+			mcp.Required(),
+			mcp.Description("Module source as written in Terraform, e.g. Azure/avm-res-network-virtualnetwork/azurerm, terraform-aws-modules/vpc/aws, or git::https://github.com/org/repo.git?ref=v1.0.0"),
+		),
+	)
+	s.AddTool(moduleStatusTool, handleModuleStatus)
+
 	if err := server.ServeStdio(s); err != nil {
 		fmt.Fprintf(os.Stderr, "tfoutdated-mcp server error: %v\n", err)
 		os.Exit(1)
@@ -180,6 +206,24 @@ func handleScan(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallTool
 	}
 
 	return mcp.NewToolResultText(buf.String()), nil
+}
+
+func handleModuleStatus(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	source, err := requiredString(request, "source")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	st, err := resolver.New(resolver.Options{}).ModuleStatus(ctx, source)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("module status error: %v", err)), nil
+	}
+
+	data, err := json.MarshalIndent(st, "", "  ")
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("json error: %v", err)), nil
+	}
+	return mcp.NewToolResultText(string(data)), nil
 }
 
 func handleRecommend(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {

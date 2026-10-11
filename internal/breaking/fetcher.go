@@ -1,11 +1,13 @@
 package breaking
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
-	"time"
+
+	"github.com/anasskartit/tfoutdated/internal/httpx"
 )
 
 // Known GitHub changelog URLs for major providers.
@@ -17,18 +19,23 @@ var providerChangelogURLs = map[string]string{
 	"google":  "https://raw.githubusercontent.com/hashicorp/terraform-provider-google/main/CHANGELOG.md",
 }
 
+// maxChangelogBytes caps a changelog read. The azurerm CHANGELOG is the largest
+// we fetch at roughly 1 MB; this leaves headroom without letting a bad response
+// pull an unbounded amount into memory.
+const maxChangelogBytes = 16 << 20
+
 // Fetcher retrieves changelogs from GitHub.
 type Fetcher struct {
-	client *http.Client
+	client *httpx.Client
 }
 
 // NewFetcher creates a new changelog fetcher.
+//
+// It goes through httpx so that the GitHub token the user exported actually
+// applies here too. Previously this fetcher authenticated to nothing, so half
+// the tool's GitHub traffic stayed anonymous and burned the 60/hour budget.
 func NewFetcher() *Fetcher {
-	return &Fetcher{
-		client: &http.Client{
-			Timeout: 30 * time.Second,
-		},
-	}
+	return &Fetcher{client: httpx.New()}
 }
 
 // FetchChangelog downloads the CHANGELOG for a provider.
@@ -76,7 +83,34 @@ func (f *Fetcher) FetchModuleChangelog(source string) (string, error) {
 }
 
 func (f *Fetcher) fetchURL(url string) (string, error) {
-	resp, err := f.client.Get(url)
+	body, err := f.get(url)
+	if err == nil {
+		return body, nil
+	}
+	// The default branch is not always "main". Rather than fail on projects that
+	// still use "master", try the other name once before giving up.
+	if alt := swapDefaultBranch(url); alt != "" {
+		if body, altErr := f.get(alt); altErr == nil {
+			return body, nil
+		}
+	}
+	return "", err
+}
+
+// swapDefaultBranch returns the same raw.githubusercontent URL pointed at the
+// other conventional default branch, or "" if the URL uses neither.
+func swapDefaultBranch(url string) string {
+	switch {
+	case strings.Contains(url, "/main/"):
+		return strings.Replace(url, "/main/", "/master/", 1)
+	case strings.Contains(url, "/master/"):
+		return strings.Replace(url, "/master/", "/main/", 1)
+	}
+	return ""
+}
+
+func (f *Fetcher) get(url string) (string, error) {
+	resp, err := f.client.Get(context.Background(), url, nil)
 	if err != nil {
 		return "", fmt.Errorf("fetching changelog: %w", err)
 	}
@@ -86,7 +120,7 @@ func (f *Fetcher) fetchURL(url string) (string, error) {
 		return "", fmt.Errorf("changelog fetch returned HTTP %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxChangelogBytes))
 	if err != nil {
 		return "", fmt.Errorf("reading changelog body: %w", err)
 	}

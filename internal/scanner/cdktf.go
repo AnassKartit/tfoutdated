@@ -87,22 +87,22 @@ var cdktfProviderPackages = map[string]struct {
 	Namespace string
 	Name      string
 }{
-	"@cdktf/provider-aws":       {Namespace: "hashicorp", Name: "aws"},
-	"@cdktf/provider-azurerm":   {Namespace: "hashicorp", Name: "azurerm"},
-	"@cdktf/provider-google":    {Namespace: "hashicorp", Name: "google"},
-	"@cdktf/provider-azuread":   {Namespace: "hashicorp", Name: "azuread"},
-	"@cdktf/provider-azapi":     {Namespace: "azure", Name: "azapi"},
+	"@cdktf/provider-aws":        {Namespace: "hashicorp", Name: "aws"},
+	"@cdktf/provider-azurerm":    {Namespace: "hashicorp", Name: "azurerm"},
+	"@cdktf/provider-google":     {Namespace: "hashicorp", Name: "google"},
+	"@cdktf/provider-azuread":    {Namespace: "hashicorp", Name: "azuread"},
+	"@cdktf/provider-azapi":      {Namespace: "azure", Name: "azapi"},
 	"@cdktf/provider-kubernetes": {Namespace: "hashicorp", Name: "kubernetes"},
-	"@cdktf/provider-helm":      {Namespace: "hashicorp", Name: "helm"},
-	"@cdktf/provider-null":      {Namespace: "hashicorp", Name: "null"},
-	"@cdktf/provider-random":    {Namespace: "hashicorp", Name: "random"},
-	"@cdktf/provider-local":     {Namespace: "hashicorp", Name: "local"},
-	"@cdktf/provider-external":  {Namespace: "hashicorp", Name: "external"},
-	"@cdktf/provider-tls":       {Namespace: "hashicorp", Name: "tls"},
-	"@cdktf/provider-dns":       {Namespace: "hashicorp", Name: "dns"},
-	"@cdktf/provider-time":      {Namespace: "hashicorp", Name: "time"},
-	"@cdktf/provider-archive":   {Namespace: "hashicorp", Name: "archive"},
-	"@cdktf/provider-http":      {Namespace: "hashicorp", Name: "http"},
+	"@cdktf/provider-helm":       {Namespace: "hashicorp", Name: "helm"},
+	"@cdktf/provider-null":       {Namespace: "hashicorp", Name: "null"},
+	"@cdktf/provider-random":     {Namespace: "hashicorp", Name: "random"},
+	"@cdktf/provider-local":      {Namespace: "hashicorp", Name: "local"},
+	"@cdktf/provider-external":   {Namespace: "hashicorp", Name: "external"},
+	"@cdktf/provider-tls":        {Namespace: "hashicorp", Name: "tls"},
+	"@cdktf/provider-dns":        {Namespace: "hashicorp", Name: "dns"},
+	"@cdktf/provider-time":       {Namespace: "hashicorp", Name: "time"},
+	"@cdktf/provider-archive":    {Namespace: "hashicorp", Name: "archive"},
+	"@cdktf/provider-http":       {Namespace: "hashicorp", Name: "http"},
 }
 
 // scanCdktfJSON parses a cdktf.json file and extracts module and provider dependencies.

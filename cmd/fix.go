@@ -21,7 +21,7 @@ var (
 )
 
 var fixCmd = &cobra.Command{
-	Use:   "fix",
+	Use:   "fix [path]",
 	Short: "Automatically fix outdated dependencies with breaking change transforms",
 	Long: `Fix updates version constraints in .tf files, applies variable renames,
 value transforms, and provider constraint updates.
@@ -29,6 +29,7 @@ value transforms, and provider constraint updates.
 By default, upgrades all dependencies (including major bumps) and applies
 auto-fixable transforms. Use --safe to only upgrade to non-breaking versions.
 Use --dry-run to preview changes without modifying files.`,
+	Args: cobra.MaximumNArgs(1),
 	RunE: runFix,
 }
 
@@ -48,9 +49,9 @@ func runFix(cmd *cobra.Command, args []string) error {
 	bold := lipgloss.NewStyle().Bold(true)
 	red := lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
 
-	path, err := filepath.Abs(flagPath)
+	path, err := resolveTargetPath(args)
 	if err != nil {
-		return fmt.Errorf("resolving path: %w", err)
+		return err
 	}
 
 	if flagDryRun {
@@ -78,6 +79,7 @@ func runFix(cmd *cobra.Command, args []string) error {
 
 	res := resolver.New(resolver.Options{
 		ProviderFilter: flagProviderFilter,
+		SkipLifecycle:  flagOffline,
 	})
 	resolved, err := res.Resolve(result)
 	if err != nil {

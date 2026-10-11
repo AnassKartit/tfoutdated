@@ -109,7 +109,9 @@ func ToBreakingChanges(results []DetectResult, version string) []breaking.Breaki
 			// Generate Transform rules for auto-fixable changes
 			switch change.Kind {
 			case breaking.VariableRenamed:
-				bc.AutoFixable = true
+				// A rename guessed by similarity is only a suggestion; the
+				// transform is kept so the fix can be shown, not applied.
+				bc.AutoFixable = !change.Probable
 				transform := &breaking.Transform{
 					RenameAttrs: map[string]string{change.OldValue: change.NewValue},
 				}

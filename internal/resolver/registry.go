@@ -1,21 +1,26 @@
 package resolver
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"sort"
 	"strings"
-	"time"
 
+	"github.com/anasskartit/tfoutdated/internal/httpx"
+	"github.com/anasskartit/tfoutdated/internal/lifecycle"
 	goversion "github.com/hashicorp/go-version"
 )
+
+// maxRegistryBytes caps a registry response body.
+const maxRegistryBytes = 32 << 20
 
 // RegistryClient interacts with the Terraform Registry API.
 type RegistryClient struct {
 	baseURL    string
-	httpClient *http.Client
+	httpClient *httpx.Client
 }
 
 // moduleVersionsResponse is the API response for module versions.
@@ -37,10 +42,8 @@ type providerVersionsResponse struct {
 // NewRegistryClient creates a new Terraform Registry HTTP client.
 func NewRegistryClient(baseURL string) *RegistryClient {
 	return &RegistryClient{
-		baseURL: strings.TrimRight(baseURL, "/"),
-		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
-		},
+		baseURL:    strings.TrimRight(baseURL, "/"),
+		httpClient: httpx.New(),
 	}
 }
 
@@ -124,6 +127,11 @@ func (c *RegistryClient) GetProviderVersions(namespace, name string) ([]*goversi
 type ModuleDetail struct {
 	Deprecated bool   `json:"deprecated"`
 	ReplacedBy string `json:"replaced_by,omitempty"`
+	RepoURL    string `json:"source,omitempty"` // repository the module is published from
+	Readme     string `json:"-"`                // README of the latest version
+	Message    string `json:"-"`                // which signals marked it deprecated
+	// Evidence links each signal to the page that shows it.
+	Evidence []lifecycle.Evidence `json:"-"`
 }
 
 // ProviderDep represents a provider dependency constraint from a module version.
@@ -134,10 +142,17 @@ type ProviderDep struct {
 	Version   string `json:"version"`
 }
 
-// moduleDetailResponse is the API response for module detail.
+// moduleDetailResponse is the API response for module detail. The registry
+// reports deprecation as a "deprecation" object, null when not deprecated;
+// "deprecated" and "replaced_by" are kept for registries that use them.
 type moduleDetailResponse struct {
-	Deprecated bool   `json:"deprecated"`
-	ReplacedBy string `json:"replaced_by"`
+	Deprecated  bool            `json:"deprecated"`
+	ReplacedBy  string          `json:"replaced_by"`
+	Deprecation json.RawMessage `json:"deprecation"`
+	Source      string          `json:"source"`
+	Root        struct {
+		Readme string `json:"readme"`
+	} `json:"root"`
 }
 
 // moduleVersionDetailResponse is the API response for a specific module version.
@@ -175,10 +190,76 @@ func (c *RegistryClient) FetchModuleDetail(source string) (*ModuleDetail, error)
 		return nil, fmt.Errorf("parsing module detail: %w", err)
 	}
 
-	return &ModuleDetail{
+	detail := &ModuleDetail{
 		Deprecated: resp.Deprecated,
 		ReplacedBy: resp.ReplacedBy,
-	}, nil
+		RepoURL:    resp.Source,
+		Readme:     resp.Root.Readme,
+	}
+	if dep := strings.TrimSpace(string(resp.Deprecation)); dep != "" && dep != "null" {
+		detail.Deprecated = true
+		var d struct {
+			Link string `json:"link"`
+		}
+		if json.Unmarshal(resp.Deprecation, &d) == nil && detail.ReplacedBy == "" {
+			detail.ReplacedBy = d.Link
+		}
+	}
+	return detail, nil
+}
+
+// ReplacementVersion returns the version to pin when moving to a replacement
+// module: the newest published version of its base module that contains the
+// submodule, when the replacement names one ("ns/name/provider//modules/x").
+// It returns "" when the source is not a registry module or no version fits.
+func (c *RegistryClient) ReplacementVersion(source string) (string, error) {
+	base, sub, _ := strings.Cut(source, "//")
+	if strings.Count(base, "/") != 2 || strings.Contains(base, ":") {
+		return "", nil
+	}
+	versions, err := c.GetModuleVersions(base)
+	if err != nil || len(versions) == 0 {
+		return "", err
+	}
+	// Newest first: the first version that has the submodule wins.
+	for i := len(versions) - 1; i >= 0; i-- {
+		v := versions[i].Original()
+		if sub == "" {
+			return v, nil
+		}
+		ok, err := c.hasSubmodule(base, v, sub)
+		if err != nil {
+			return "", err
+		}
+		if ok {
+			return v, nil
+		}
+		if i < len(versions)-3 {
+			break // a submodule missing from the last releases is not coming back
+		}
+	}
+	return "", nil
+}
+
+func (c *RegistryClient) hasSubmodule(base, version, sub string) (bool, error) {
+	body, err := c.doGet(fmt.Sprintf("%s/v1/modules/%s/%s", c.baseURL, base, version))
+	if err != nil {
+		return false, err
+	}
+	var resp struct {
+		Submodules []struct {
+			Path string `json:"path"`
+		} `json:"submodules"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return false, err
+	}
+	for _, m := range resp.Submodules {
+		if strings.Trim(m.Path, "/") == strings.Trim(sub, "/") {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // GetModuleProviderDeps fetches provider dependencies for a specific module version.
@@ -218,13 +299,8 @@ func (c *RegistryClient) GetModuleProviderDeps(source, version string) ([]Provid
 }
 
 func (c *RegistryClient) doGet(url string) ([]byte, error) {
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.httpClient.Get(context.Background(), url,
+		map[string]string{"Accept": "application/json"})
 	if err != nil {
 		return nil, err
 	}
@@ -234,7 +310,7 @@ func (c *RegistryClient) doGet(url string) ([]byte, error) {
 		return nil, fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxRegistryBytes))
 	if err != nil {
 		return nil, fmt.Errorf("reading response body: %w", err)
 	}

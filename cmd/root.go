@@ -60,7 +60,20 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&flagReposFile, "repos", "", "File with repo URLs/paths (one per line)")
 	rootCmd.PersistentFlags().StringVar(&flagOutputFile, "output-file", "", "Write report to file (auto-detects format from extension: .html, .md, .json)")
 	rootCmd.PersistentFlags().BoolVarP(&flagVerbose, "verbose", "v", false, "Show all breaking changes (no truncation)")
+
+	// Short names in the terraform style; they set the same values as the
+	// longer ones above, which stay for existing scripts.
+	rootCmd.PersistentFlags().StringVar(&flagOutput, "format", "table", "Same as --output")
+	rootCmd.PersistentFlags().StringVar(&flagOutputFile, "out", "", "Same as --output-file")
+	rootCmd.PersistentFlags().BoolVar(&flagOffline, "offline", false, "Skip upstream lifecycle checks (GitHub, AVM index); registry only")
+
+	// Every flag can also come from TFOUTDATED_<FLAG>, e.g. TFOUTDATED_FAIL_ON.
+	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		return applyEnv(cmd)
+	}
 }
+
+var flagOffline bool
 
 // formatFromFilename detects output format from file extension.
 func formatFromFilename(filename string) string {
@@ -77,11 +90,53 @@ func formatFromFilename(filename string) string {
 	}
 }
 
-// Execute runs the root command.
+// Execute runs the root command. Use ExitCode on the result for the process
+// exit status.
 func Execute() error {
+	rootCmd.SetArgs(normalizeArgs(os.Args[1:], longFlagNames(rootCmd)))
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		if ExitCode(err) == ExitFindings {
+			// Findings are a result, not a failure of the tool.
+			fmt.Fprintf(os.Stderr, "\n%v\n", err)
+		} else {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		}
 		return err
 	}
 	return nil
+}
+
+// resolveTargetPath returns the directory to operate on.
+//
+// A positional argument wins over --path so that "tfoutdated scan ./infra" behaves
+// the way every other CLI does. Without this, cobra's default ArbitraryArgs policy
+// accepted the argument and silently discarded it, and the command ran against the
+// --path default of "." — scanning, or worse rewriting, the whole working tree
+// instead of the directory the user named.
+func resolveTargetPath(args []string) (string, error) {
+	target := flagPath
+	if len(args) > 0 && args[0] != "" {
+		if flagPath != "." && flagPath != args[0] {
+			return "", fmt.Errorf("conflicting paths: argument %q and --path %q; pass only one", args[0], flagPath)
+		}
+		target = args[0]
+	}
+
+	// Comma-separated multi-path support is handled by the caller; keep it intact.
+	if strings.Contains(target, ",") {
+		return target, nil
+	}
+
+	abs, err := filepath.Abs(target)
+	if err != nil {
+		return "", fmt.Errorf("resolving path %q: %w", target, err)
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		return "", fmt.Errorf("path %q: %w", target, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("path %q is a file; pass the directory that contains it", target)
+	}
+	return abs, nil
 }

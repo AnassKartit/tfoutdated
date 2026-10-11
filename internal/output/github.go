@@ -27,6 +27,9 @@ func (r *GitHubRenderer) Render(w io.Writer, analysis *analyzer.Analysis) error 
 			if dep.ReplacedBy != "" {
 				fmt.Fprintf(w, " | replaced by: %s", dep.ReplacedBy)
 			}
+			if dep.DeprecationReason != "" {
+				fmt.Fprintf(w, " | %s", dep.DeprecationReason)
+			}
 			fmt.Fprintln(w)
 			continue
 		}
@@ -100,7 +103,7 @@ func (r *GitHubRenderer) Render(w io.Writer, analysis *analyzer.Analysis) error 
 
 	// Status badges
 	if len(analysis.BreakingChanges) > 0 {
-		fmt.Fprintf(w, "> **%d** outdated dependencies with **%d** breaking changes\n\n", len(analysis.Dependencies), len(analysis.BreakingChanges))
+		fmt.Fprintf(w, "> **%d** outdated dependencies with **%d** breaking changes\n\n", len(analysis.Dependencies), breaking.CountBreaking(analysis.BreakingChanges))
 	} else if len(analysis.Dependencies) > 0 {
 		fmt.Fprintf(w, "> **%d** outdated dependencies (no breaking changes)\n\n", len(analysis.Dependencies))
 	} else {
@@ -124,7 +127,7 @@ func (r *GitHubRenderer) Render(w io.Writer, analysis *analyzer.Analysis) error 
 		fmt.Fprintf(w, "| Patch updates | %d |\n", patch)
 	}
 	if len(analysis.BreakingChanges) > 0 {
-		fmt.Fprintf(w, "| Breaking changes | %d |\n", len(analysis.BreakingChanges))
+		fmt.Fprintf(w, "| Breaking changes | %d |\n", breaking.CountBreaking(analysis.BreakingChanges))
 	}
 	if autoFixCount > 0 {
 		fmt.Fprintf(w, "| Auto-fixable | %d |\n", autoFixCount)
@@ -228,4 +231,3 @@ func relPath(file, base string) string {
 	}
 	return rel
 }
-

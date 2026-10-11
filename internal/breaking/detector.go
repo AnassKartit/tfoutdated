@@ -1,6 +1,8 @@
 package breaking
 
 import (
+	goversion "github.com/hashicorp/go-version"
+
 	"github.com/anasskartit/tfoutdated/internal/resolver"
 )
 
@@ -52,38 +54,9 @@ func (d *Detector) Detect(resolved *resolver.ResolvedResult) []BreakingChange {
 // This is separate because it requires network access.
 func (d *Detector) DetectWithChangelogs(resolved *resolver.ResolvedResult) []BreakingChange {
 	allChanges := d.Detect(resolved)
+	allChanges = append(allChanges, d.ProviderChangelogChanges(resolved)...)
 
 	fetcher := NewFetcher()
-	seen := make(map[string]bool)
-
-	// Process provider changelogs
-	for _, dep := range resolved.Dependencies {
-		if dep.IsModule {
-			continue
-		}
-
-		provider := dep.Name
-		if seen[provider] {
-			continue
-		}
-		seen[provider] = true
-
-		changelog, err := fetcher.FetchChangelog(provider)
-		if err != nil {
-			continue
-		}
-
-		parsed := ParseChangelog(provider, changelog)
-
-		// Filter to relevant version range
-		for _, bc := range parsed {
-			if bc.Version > dep.Current.String() && bc.Version <= dep.Latest.String() {
-				if !d.isKnown(bc) {
-					allChanges = append(allChanges, bc)
-				}
-			}
-		}
-	}
 
 	// Process module changelogs
 	seenModules := make(map[string]bool)
@@ -106,7 +79,7 @@ func (d *Detector) DetectWithChangelogs(resolved *resolver.ResolvedResult) []Bre
 
 		// Filter to relevant version range and mark as module changes
 		for _, bc := range parsed {
-			if bc.Version > dep.Current.String() && bc.Version <= dep.Latest.String() {
+			if inVersionRange(bc.Version, dep.Current.String(), dep.Latest.String()) {
 				bc.IsModule = true
 				if !d.isKnown(bc) {
 					allChanges = append(allChanges, bc)
@@ -126,4 +99,53 @@ func (d *Detector) isKnown(bc BreakingChange) bool {
 		}
 	}
 	return false
+}
+
+// ProviderChangelogChanges reads each provider's changelog and returns the
+// breaking changes released after the current version, up to the latest, that
+// the knowledge base does not already cover. Needs network access.
+func (d *Detector) ProviderChangelogChanges(resolved *resolver.ResolvedResult) []BreakingChange {
+	var changes []BreakingChange
+	fetcher := NewFetcher()
+	seen := make(map[string]bool)
+
+	for _, dep := range resolved.Dependencies {
+		if dep.IsModule || dep.Current == nil || dep.Latest == nil {
+			continue
+		}
+		key := dep.Name + "@" + dep.Current.String() + "->" + dep.Latest.String()
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+
+		changelog, err := fetcher.FetchChangelog(dep.Name)
+		if err != nil {
+			continue
+		}
+		for _, bc := range ParseChangelog(dep.Name, changelog) {
+			if inVersionRange(bc.Version, dep.Current.String(), dep.Latest.String()) && !d.isKnown(bc) {
+				changes = append(changes, bc)
+			}
+		}
+	}
+	return changes
+}
+
+// inVersionRange reports from < v <= to, comparing as versions: as strings,
+// "10.0.0" sorts before "9.0.0".
+func inVersionRange(v, from, to string) bool {
+	ver, err := goversion.NewVersion(v)
+	if err != nil {
+		return false
+	}
+	lo, err := goversion.NewVersion(from)
+	if err != nil {
+		return false
+	}
+	hi, err := goversion.NewVersion(to)
+	if err != nil {
+		return false
+	}
+	return ver.GreaterThan(lo) && ver.LessThanOrEqual(hi)
 }

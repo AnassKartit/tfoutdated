@@ -115,9 +115,9 @@ func TestSkipLocalModules(t *testing.T) {
 
 func TestClassifySource(t *testing.T) {
 	tests := []struct {
-		source     string
-		wantType   string
-		wantIsAVM  bool
+		source    string
+		wantType  string
+		wantIsAVM bool
 	}{
 		{"./modules/local", "local", false},
 		{"../shared", "local", false},
@@ -370,5 +370,46 @@ provider "azurerm" {
 	}
 	if provBlock.RawHCL == "" {
 		t.Error("expected RawHCL to be populated for provider block")
+	}
+}
+
+// Seen in Azure/terraform-azurerm-avm-res-portal-dashboard: a provider declared
+// with a source and no version is valid Terraform and used to panic the scanner.
+func TestExtractProvidersWithoutVersion(t *testing.T) {
+	tmp := t.TempDir()
+	content := `
+terraform {
+  required_providers {
+    azapi = {
+      source = "Azure/azapi"
+    }
+    azurerm = {
+      source  = "hashicorp/azurerm"
+      version = "~> 4.0"
+    }
+    modtm = {
+      version = "~> 0.3"
+    }
+  }
+}
+`
+	if err := os.WriteFile(filepath.Join(tmp, "main.tf"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := New(Options{Path: tmp, Recursive: false}).Scan()
+	if err != nil {
+		t.Fatalf("Scan() error: %v", err)
+	}
+
+	got := map[string]string{}
+	for _, p := range result.Providers {
+		got[p.Name] = p.Version
+	}
+	if _, ok := got["azapi"]; ok {
+		t.Error("azapi has no version constraint and should be skipped")
+	}
+	if got["azurerm"] != "~> 4.0" || got["modtm"] != "~> 0.3" {
+		t.Errorf("providers = %v", got)
 	}
 }

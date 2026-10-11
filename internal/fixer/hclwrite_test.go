@@ -51,11 +51,11 @@ func TestReplaceVersionInLineRangeConstraint(t *testing.T) {
 
 func TestReplaceVersionInLineWithPrefixes(t *testing.T) {
 	tests := []struct {
-		name    string
-		line    string
-		oldVer  string
-		newVer  string
-		want    string
+		name   string
+		line   string
+		oldVer string
+		newVer string
+		want   string
 	}{
 		{
 			name:   "not-equal prefix",
@@ -107,7 +107,7 @@ func TestBuildConstraint(t *testing.T) {
 		{"exact", "3.116.0", "3.116.0"},
 		{"minimum", "3.116.0", ">= 3.116.0"},
 		{"unknown", "3.116.0", "~> 3.116.0"}, // default
-		{"", "3.116.0", "~> 3.116.0"},         // empty defaults to pessimistic
+		{"", "3.116.0", "~> 3.116.0"},        // empty defaults to pessimistic
 	}
 
 	for _, tt := range tests {

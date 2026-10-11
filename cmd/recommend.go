@@ -3,7 +3,6 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -16,11 +15,12 @@ import (
 )
 
 var recommendCmd = &cobra.Command{
-	Use:   "recommend",
+	Use:   "recommend [path]",
 	Short: "Generate governance recommendations",
 	Long: `Analyze Terraform dependencies and generate actionable governance
 recommendations including version fragmentation, unpinned versions,
 major version drift, deprecated modules, and stale dependencies.`,
+	Args: cobra.MaximumNArgs(1),
 	RunE: runRecommend,
 }
 
@@ -33,9 +33,9 @@ func runRecommend(cmd *cobra.Command, args []string) error {
 		flagOutput = "json"
 	}
 
-	path, err := filepath.Abs(flagPath)
+	path, err := resolveTargetPath(args)
 	if err != nil {
-		return fmt.Errorf("resolving path: %w", err)
+		return err
 	}
 
 	cfg := config.Load(path)

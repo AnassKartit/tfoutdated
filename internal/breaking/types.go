@@ -86,6 +86,23 @@ func (s Severity) String() string {
 	}
 }
 
+// IsBreaking reports whether the change breaks existing configurations.
+// Informational notes and warnings are listed but not counted as breaking.
+func (bc BreakingChange) IsBreaking() bool {
+	return bc.Severity >= SeverityBreaking
+}
+
+// CountBreaking returns how many changes break existing configurations.
+func CountBreaking(changes []BreakingChange) int {
+	n := 0
+	for _, bc := range changes {
+		if bc.IsBreaking() {
+			n++
+		}
+	}
+	return n
+}
+
 // ValueHintConfidence indicates how confident we are about a value rewrite hint.
 type ValueHintConfidence int
 
@@ -105,32 +122,49 @@ type ValueHint struct {
 
 // Transform describes a deterministic code transformation rule for a breaking change.
 type Transform struct {
-	RenameResource string            // new resource type name, e.g. "azurerm_linux_web_app"
-	RenameAttrs    map[string]string // old attr name → new attr name
-	RemoveAttrs    []string          // attributes to remove
-	AddAttrs       map[string]string // new attr name → default value (quoted if string)
+	RenameResource string               // new resource type name, e.g. "azurerm_linux_web_app"
+	RenameAttrs    map[string]string    // old attr name → new attr name
+	RemoveAttrs    []string             // attributes to remove
+	AddAttrs       map[string]string    // new attr name → default value (quoted if string)
 	ValueHints     map[string]ValueHint // old attr name → value rewrite hint
 }
 
 // BreakingChange describes a known breaking change in a provider or module.
 type BreakingChange struct {
-	Provider       string     // e.g., "azurerm", "azuread", "aws", "google"
-	Version        string     // version that introduced the change
-	ResourceType   string     // e.g., "azurerm_virtual_network"
-	Attribute      string     // e.g., "resource_group_name"
-	Kind           ChangeKind
-	Severity       Severity
-	Description    string
-	MigrationGuide string
-	OldValue       string // for renames: old attribute/resource name
-	NewValue       string // for renames: new attribute/resource name
-	IsModule       bool
-	AutoFixable    bool
-	BeforeSnippet  string // example Terraform code BEFORE the change
-	AfterSnippet   string // example Terraform code AFTER the change
-	EffortLevel    string // "small", "medium", "large" — how much work to migrate
+	Provider        string // e.g., "azurerm", "azuread", "aws", "google"
+	Version         string // version that introduced the change
+	ResourceType    string // e.g., "azurerm_virtual_network"
+	Attribute       string // e.g., "resource_group_name"
+	Kind            ChangeKind
+	Severity        Severity
+	Description     string
+	MigrationGuide  string
+	OldValue        string // for renames: old attribute/resource name
+	NewValue        string // for renames: new attribute/resource name
+	IsModule        bool
+	AutoFixable     bool
+	BeforeSnippet   string     // example Terraform code BEFORE the change
+	AfterSnippet    string     // example Terraform code AFTER the change
+	EffortLevel     string     // "small", "medium", "large" — how much work to migrate
 	Transform       *Transform // deterministic transformation rule (nil if not applicable)
 	DynamicDetected bool       // true if detected by schema diffing rather than knowledge base
+	// Probable marks a change inferred by similarity (a guessed rename). It is
+	// reported as a suggestion with its Score and never applied automatically.
+	Probable bool
+	Score    float64
+}
+
+// Basis says where a breaking change comes from, so a reader knows how far to
+// trust it: a curated entry, a fact read from both versions' schemas, or a guess.
+func (bc BreakingChange) Basis() string {
+	switch {
+	case bc.Probable:
+		return "suggestion"
+	case bc.DynamicDetected:
+		return "schema comparison"
+	default:
+		return "curated list"
+	}
 }
 
 // EffortEmoji returns a human-friendly indicator of migration effort.

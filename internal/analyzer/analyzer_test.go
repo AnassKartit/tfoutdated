@@ -38,7 +38,7 @@ func TestSummaryWithDependencies(t *testing.T) {
 	}
 
 	got := a.Summary()
-	want := "4 dependencies outdated (1 major, 1 minor, 2 patchs)"
+	want := "4 dependencies outdated (1 major, 1 minor, 2 patches)"
 	if got != want {
 		t.Errorf("Summary() = %q, want %q", got, want)
 	}
@@ -55,6 +55,38 @@ func TestSummarySingleDependency(t *testing.T) {
 	want := "1 dependency outdated (1 major)"
 	if got != want {
 		t.Errorf("Summary() = %q, want %q", got, want)
+	}
+}
+
+// A deprecated module on its latest version is not outdated, but it is not
+// fine either: the summary must say so instead of reporting a bare "outdated".
+func TestSummaryDeprecated(t *testing.T) {
+	a := &Analysis{
+		Dependencies: []DependencyAnalysis{
+			{Name: "vwan", UpdateType: resolver.UpdateNone, Deprecated: true},
+			{Name: "vnet", UpdateType: resolver.UpdatePatch, Deprecated: true},
+			{Name: "azurerm", UpdateType: resolver.UpdateMinor},
+		},
+	}
+
+	got := a.Summary()
+	want := "2 dependencies outdated (1 minor, 1 patch), 2 dependencies deprecated"
+	if got != want {
+		t.Errorf("Summary() = %q, want %q", got, want)
+	}
+}
+
+func TestFilterBySeverityKeepsDeprecated(t *testing.T) {
+	a := &Analysis{
+		Dependencies: []DependencyAnalysis{
+			{Name: "vwan", UpdateType: resolver.UpdateNone, Deprecated: true},
+			{Name: "random", UpdateType: resolver.UpdatePatch},
+		},
+	}
+
+	got := a.FilterBySeverity("major")
+	if len(got.Dependencies) != 1 || got.Dependencies[0].Name != "vwan" {
+		t.Errorf("FilterBySeverity(major) = %+v, want only the deprecated module", got.Dependencies)
 	}
 }
 

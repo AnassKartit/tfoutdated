@@ -25,7 +25,7 @@ func TestExtractMinVersion(t *testing.T) {
 
 func TestParseVersionParts(t *testing.T) {
 	tests := []struct {
-		input                  string
+		input                     string
 		wantMaj, wantMin, wantPat int
 	}{
 		{"3.75.0", 3, 75, 0},
@@ -70,7 +70,7 @@ func TestIsConstraintCompatible(t *testing.T) {
 		// Pessimistic ~> X.Y.Z: allows [X.Y.Z, X.(Y+1).0)
 		{"~> 3.75.0", "3.75.0", true},
 		{"~> 3.75.0", "3.75.5", true},
-		{"~> 3.75.0", "3.76.0", false},  // new minor needed
+		{"~> 3.75.0", "3.76.0", false}, // new minor needed
 		{"~> 3.75.0", "3.80.0", false},
 		{"~> 3.75.0", "4.0.0", false},
 

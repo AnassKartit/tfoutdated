@@ -27,6 +27,9 @@ func (r *AzDevOpsRenderer) Render(w io.Writer, analysis *analyzer.Analysis) erro
 			if dep.ReplacedBy != "" {
 				fmt.Fprintf(w, " | replaced by: %s", dep.ReplacedBy)
 			}
+			if dep.DeprecationReason != "" {
+				fmt.Fprintf(w, " | %s", dep.DeprecationReason)
+			}
 			fmt.Fprintln(w)
 			continue
 		}
@@ -97,7 +100,7 @@ func (r *AzDevOpsRenderer) Render(w io.Writer, analysis *analyzer.Analysis) erro
 	fmt.Fprintf(w, "  Dependencies scanned: %d\n", analysis.TotalDeps)
 	fmt.Fprintf(w, "  Outdated:             %d (%d major, %d minor, %d patch)\n", len(analysis.Dependencies), major, minor, patch)
 	fmt.Fprintf(w, "  Up-to-date:           %d\n", analysis.UpToDate)
-	fmt.Fprintf(w, "  Breaking changes:     %d\n", len(analysis.BreakingChanges))
+	fmt.Fprintf(w, "  Breaking changes:     %d\n", breaking.CountBreaking(analysis.BreakingChanges))
 	if autoFixCount > 0 {
 		fmt.Fprintf(w, "  Auto-fixable:         %d\n", autoFixCount)
 	}
@@ -115,7 +118,7 @@ func (r *AzDevOpsRenderer) Render(w io.Writer, analysis *analyzer.Analysis) erro
 	// Task completion status
 	if len(analysis.Dependencies) > 0 || len(analysis.BreakingChanges) > 0 {
 		fmt.Fprintf(w, "##vso[task.complete result=SucceededWithIssues;]%d outdated, %d breaking\n",
-			len(analysis.Dependencies), len(analysis.BreakingChanges))
+			len(analysis.Dependencies), breaking.CountBreaking(analysis.BreakingChanges))
 	}
 
 	return nil

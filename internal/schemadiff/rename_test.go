@@ -132,6 +132,59 @@ func TestDetectRenames_MultipleSimultaneous(t *testing.T) {
 	}
 }
 
+func TestDetectRenamesScored_ScoresMatchRenames(t *testing.T) {
+	removed := map[string]*tfconfig.Variable{
+		"resource_group_name": {
+			Name:        "resource_group_name",
+			Type:        "string",
+			Description: "The name of the resource group",
+			Required:    true,
+		},
+		"location": {
+			Name:        "location",
+			Type:        "string",
+			Description: "The Azure region",
+			Required:    true,
+		},
+	}
+	added := map[string]*tfconfig.Variable{
+		"resource_group_resource_id": {
+			Name:        "resource_group_resource_id",
+			Type:        "string",
+			Description: "The resource ID of the resource group",
+			Required:    true,
+		},
+		"enable_monitoring": {
+			Name:        "enable_monitoring",
+			Type:        "bool",
+			Description: "Whether to enable monitoring",
+			Required:    false,
+			Sensitive:   true,
+		},
+	}
+
+	renames, scores := detectRenamesScored(removed, added, &tfconfig.Module{}, &tfconfig.Module{})
+
+	if len(scores) != len(renames) {
+		t.Fatalf("expected one score per rename, got %d scores for %d renames", len(scores), len(renames))
+	}
+	score, ok := scores["resource_group_name"]
+	if !ok {
+		t.Fatalf("expected a score for resource_group_name, got %v", scores)
+	}
+	want := computeVariableScore("resource_group_name", "resource_group_resource_id",
+		removed["resource_group_name"], added["resource_group_resource_id"])
+	if math.Abs(score-want) > 1e-9 {
+		t.Errorf("expected score %.4f, got %.4f", want, score)
+	}
+	if score < 0.45 || score > 1 {
+		t.Errorf("score %.4f outside [threshold, 1]", score)
+	}
+	if _, ok := scores["location"]; ok {
+		t.Errorf("unmatched variable location should have no score, got %v", scores)
+	}
+}
+
 func TestDetectOutputRenames(t *testing.T) {
 	removed := map[string]*tfconfig.Output{
 		"vnet_id": {
@@ -229,7 +282,7 @@ func TestDefaultSimilarity(t *testing.T) {
 		{nil, "hello", 0.3},
 		{"hello", "hello", 1.0},
 		{"hello", "world", 0.5}, // same Go type (string)
-		{"hello", 42, 0.0},     // different Go type
+		{"hello", 42, 0.0},      // different Go type
 	}
 
 	for _, tt := range tests {

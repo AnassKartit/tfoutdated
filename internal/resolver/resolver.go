@@ -1,12 +1,15 @@
 package resolver
 
 import (
+	"context"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 
 	goversion "github.com/hashicorp/go-version"
 
+	"github.com/anasskartit/tfoutdated/internal/lifecycle"
 	"github.com/anasskartit/tfoutdated/internal/scanner"
 )
 
@@ -18,6 +21,9 @@ const (
 	UpdatePatch            // 3.75.0 → 3.75.1
 	UpdateMinor            // 3.75.0 → 3.76.0
 	UpdateMajor            // 3.75.0 → 4.0.0
+	// UpdateUnknown marks a dependency whose available versions could not be
+	// determined, so no claim is made either way.
+	UpdateUnknown
 )
 
 func (u UpdateType) String() string {
@@ -55,15 +61,34 @@ type ResolvedDependency struct {
 	LatestInConstraint *goversion.Version // latest satisfying current constraint
 
 	// Deprecation info (modules only)
-	Deprecated         bool
-	ReplacedBy         string
+	Deprecated bool
+	ReplacedBy string
+	// ReplacedByVersion is the version to pin on the replacement: its newest
+	// release that contains the named submodule. Empty when unknown.
+	ReplacedByVersion  string
 	DeprecationMessage string
-	ConstraintRaw      string // raw constraint string (e.g., "~> 3.75.0")
+	// DeprecationEvidence links each signal to the page that shows it.
+	DeprecationEvidence []lifecycle.Evidence
+	ConstraintRaw       string // raw constraint string (e.g., "~> 3.75.0")
+
+	// Unresolved marks a dependency we could not check — typically a module on a
+	// private git host. It is reported rather than dropped so that "no findings"
+	// never quietly means "could not look".
+	Unresolved       bool
+	UnresolvedReason string
 }
 
 // ResolvedResult contains all resolved dependencies.
 type ResolvedResult struct {
+	// Dependencies holds everything we could actually check: both Current and
+	// Latest are known, so every downstream comparison is safe.
 	Dependencies []ResolvedDependency
+
+	// Unresolved holds what we could not check — a module on a private git host,
+	// a registry error, a module that no longer exists. Keeping these out of
+	// Dependencies means no consumer has to defend against a missing version,
+	// while reporting them means "no findings" never quietly means "could not look".
+	Unresolved []ResolvedDependency
 }
 
 // Options configures the resolver.
@@ -71,13 +96,17 @@ type Options struct {
 	ProviderFilter []string
 	RegistryURL    string
 	MaxConcurrency int
+	// SkipLifecycle turns off the upstream checks (GitHub archived flag,
+	// release notes, AVM index), for offline runs.
+	SkipLifecycle bool
 }
 
 // Resolver resolves latest versions for dependencies.
 type Resolver struct {
-	opts     Options
-	registry *RegistryClient
-	cache    *Cache
+	opts      Options
+	registry  *RegistryClient
+	cache     *Cache
+	lifecycle *lifecycle.Checker
 }
 
 // New creates a new Resolver.
@@ -89,11 +118,28 @@ func New(opts Options) *Resolver {
 		opts.MaxConcurrency = 10
 	}
 
-	return &Resolver{
+	r := &Resolver{
 		opts:     opts,
 		registry: NewRegistryClient(opts.RegistryURL),
 		cache:    NewCache(),
 	}
+	if !opts.SkipLifecycle {
+		r.lifecycle = sharedLifecycle()
+	}
+	return r
+}
+
+var (
+	lifecycleOnce sync.Once
+	lifecycleInst *lifecycle.Checker
+)
+
+// sharedLifecycle returns one checker per process. Multi-repo runs create a
+// resolver per repository; sharing the checker means each upstream repository
+// and the AVM index are fetched once, not once per scanned repository.
+func sharedLifecycle() *lifecycle.Checker {
+	lifecycleOnce.Do(func() { lifecycleInst = lifecycle.New(lifecycle.Options{}) })
+	return lifecycleInst
 }
 
 // Resolve fetches latest versions for all scanned dependencies.
@@ -114,8 +160,12 @@ func (r *Resolver) Resolve(scan *scanner.ScanResult) (*ResolvedResult, error) {
 
 			resolved, err := r.resolveModule(m)
 			if err != nil {
+				// Report it as unresolved rather than discarding it. A governance
+				// tool that silently omits what it could not check reports a clean
+				// bill of health on the dependencies it is blindest to.
 				mu.Lock()
 				errs = append(errs, fmt.Errorf("module %s: %w", m.Name, err))
+				result.Unresolved = append(result.Unresolved, unresolvedModule(m, err))
 				mu.Unlock()
 				return
 			}
@@ -155,7 +205,7 @@ func (r *Resolver) Resolve(scan *scanner.ScanResult) (*ResolvedResult, error) {
 
 	wg.Wait()
 
-	if len(errs) > 0 && len(result.Dependencies) == 0 {
+	if len(errs) > 0 && len(result.Dependencies) == 0 && len(result.Unresolved) == 0 {
 		return nil, fmt.Errorf("all resolutions failed: %v", errs)
 	}
 
@@ -168,7 +218,14 @@ func (r *Resolver) resolveModule(mod scanner.ModuleDependency) (*ResolvedDepende
 	if cached, ok := r.cache.GetVersions(cacheKey); ok {
 		versions = cached
 	} else {
-		fetched, err := r.registry.GetModuleVersions(mod.Source)
+		// Git-hosted modules have no registry entry; their versions are tags.
+		var fetched []*goversion.Version
+		var err error
+		if IsGitSource(mod.Source) {
+			fetched, err = GitTagVersions(context.Background(), GitRemoteURL(mod.Source))
+		} else {
+			fetched, err = r.registry.GetModuleVersions(mod.Source)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -176,38 +233,84 @@ func (r *Resolver) resolveModule(mod scanner.ModuleDependency) (*ResolvedDepende
 		r.cache.SetVersions(cacheKey, versions)
 	}
 
-	resolved, err := r.buildResolved(mod.Name, mod.Source, mod.Version, mod.FilePath, mod.Line, true, mod.IsAVM, mod.SourceType, "", versions)
+	declared := mod.Version
+	if declared == "" {
+		// "?ref=v1.2.3" is how a git module states its version.
+		declared = GitRef(mod.Source)
+	}
+
+	resolved, err := r.buildResolved(mod.Name, mod.Source, declared, mod.FilePath, mod.Line, true, mod.IsAVM, mod.SourceType, "", versions)
 	if err != nil {
 		return nil, err
 	}
 
-	// Fetch module detail for deprecation info
-	detail, detailErr := r.registry.FetchModuleDetail(mod.Source)
-	if detailErr == nil && detail != nil && detail.Deprecated {
+	// Fetch module detail for deprecation info. The registry flag alone misses
+	// modules deprecated upstream, so the lifecycle checker also reads the
+	// latest README, the GitHub repository and the AVM index. Git-hosted
+	// modules have no registry entry: their repository is all there is to check.
+	var detail *ModuleDetail
+	if IsGitSource(mod.Source) {
+		detail = &ModuleDetail{RepoURL: GitRemoteURL(mod.Source)}
+	} else if d, err := r.registry.FetchModuleDetail(mod.Source); err == nil {
+		detail = d
+	}
+	if detail != nil && r.lifecycle != nil {
+		lc, lcErr := r.lifecycle.Check(context.Background(), mod.Source, detail.RepoURL, detail.Readme)
+		if lcErr != nil {
+			fmt.Fprintf(os.Stderr, "tfoutdated: lifecycle check %s: %v\n", mod.Source, lcErr)
+		}
+		if detail.Deprecated {
+			// The registry itself flags it: that page is the evidence.
+			detail.Evidence = append(detail.Evidence, lifecycle.Evidence{
+				Label: "Terraform Registry marks it deprecated",
+				URL:   lifecycle.RegistryURL(mod.Source, ""),
+			})
+		}
+		if lc.Stopped() {
+			detail.Deprecated = true
+			detail.Message = lc.Message()
+			detail.Evidence = append(detail.Evidence, lc.Evidence...)
+			if lc.ReplacedBy != "" {
+				detail.ReplacedBy = lc.ReplacedBy
+			}
+		} else if lc.MovedTo != "" {
+			fmt.Fprintf(os.Stderr, "tfoutdated: %s: %s\n", mod.Source, lc.Message())
+		}
+	}
+	if detail != nil && detail.Deprecated {
 		if resolved == nil {
 			// Module is up-to-date but deprecated — still return it
-			current := parseCurrentVersion(mod.Version)
+			current := parseCurrentVersion(declared)
 			if current != nil && len(versions) > 0 {
 				latest := versions[len(versions)-1]
 				resolved = &ResolvedDependency{
-					Name:       mod.Name,
-					Source:     mod.Source,
-					Version:    mod.Version,
-					FilePath:   mod.FilePath,
-					Line:       mod.Line,
-					IsModule:   true,
-					IsAVM:      mod.IsAVM,
-					SourceType: mod.SourceType,
-					Current:    current,
-					Latest:     latest,
+					Name:        mod.Name,
+					Source:      mod.Source,
+					Version:     mod.Version,
+					FilePath:    mod.FilePath,
+					Line:        mod.Line,
+					IsModule:    true,
+					IsAVM:       mod.IsAVM,
+					SourceType:  mod.SourceType,
+					Current:     current,
+					Latest:      latest,
 					AllVersions: versions,
-					UpdateType: UpdateNone,
+					UpdateType:  UpdateNone,
 				}
 			}
 		}
 		if resolved != nil {
 			resolved.Deprecated = true
 			resolved.ReplacedBy = detail.ReplacedBy
+			if detail.ReplacedBy != "" {
+				v, err := r.registry.ReplacementVersion(detail.ReplacedBy)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "tfoutdated: replacement %s: %v\n", detail.ReplacedBy, err)
+				}
+				resolved.ReplacedByVersion = v
+			}
+			resolved.DeprecationMessage = detail.Message
+			resolved.DeprecationEvidence = detail.Evidence
 		}
 	}
 
@@ -394,4 +497,33 @@ func classifyUpdate(current, latest *goversion.Version) UpdateType {
 		return UpdateMinor
 	}
 	return UpdatePatch
+}
+
+// unresolvedModule represents a module whose available versions could not be
+// determined — a private git host we cannot reach, a registry error, a module
+// that no longer exists. It carries the declared version so the report can still
+// show what the code pins, and Latest stays nil to mark it unchecked.
+func unresolvedModule(mod scanner.ModuleDependency, cause error) ResolvedDependency {
+	declared := mod.Version
+	if declared == "" {
+		declared = GitRef(mod.Source)
+	}
+	dep := ResolvedDependency{
+		Name:             mod.Name,
+		Source:           mod.Source,
+		Version:          declared,
+		ConstraintRaw:    declared,
+		FilePath:         mod.FilePath,
+		Line:             mod.Line,
+		IsModule:         true,
+		IsAVM:            mod.IsAVM,
+		SourceType:       mod.SourceType,
+		UpdateType:       UpdateUnknown,
+		Unresolved:       true,
+		UnresolvedReason: strings.TrimSpace(cause.Error()),
+	}
+	if v, err := goversion.NewVersion(strings.TrimPrefix(declared, "v")); err == nil {
+		dep.Current = v
+	}
+	return dep
 }

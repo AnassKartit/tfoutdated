@@ -20,7 +20,8 @@ type ModuleDependency struct {
 	FilePath   string // path to .tf file
 	Line       int    // line number in file
 	IsAVM      bool   // Azure Verified Module detected
-	SourceType string // "registry", "github", "local"
+	SourceType string // "registry", "github", "git", "local"
+	Unpinned   bool   // no version and no ref: tracks the default branch
 }
 
 // ProviderDependency represents a required_providers entry.
@@ -130,26 +131,72 @@ func (s *Scanner) Scan() (*ScanResult, error) {
 		result.Files = append(result.Files, tgFile)
 	}
 
-	// Read lock file to get actual installed provider versions
-	lockedVersions := parseLockFile(s.opts.Path)
-	if len(lockedVersions) > 0 {
-		for i := range result.Providers {
-			p := &result.Providers[i]
-			ns := p.Namespace
-			if ns == "" {
-				ns = "hashicorp"
+	// Resolve installed provider versions from lock files.
+	//
+	// Each Terraform root owns its own .terraform.lock.hcl, so a provider is
+	// matched against the nearest lock at or above the file that declares it,
+	// not against a single lock at the scan root.
+	locks := BuildLockIndex(s.opts.Path, s.opts.Recursive)
+	declared := map[string]map[string]bool{} // lock dir -> provider keys already declared
+
+	for i := range result.Providers {
+		p := &result.Providers[i]
+		ns := p.Namespace
+		if ns == "" {
+			ns = "hashicorp"
+		}
+		key := strings.ToLower(ns + "/" + p.Name)
+
+		lockDir, versions := locks.Nearest(filepath.Dir(p.FilePath), s.opts.Path)
+		if versions == nil {
+			continue
+		}
+		for lockKey, v := range versions {
+			if normalizeProviderKey(lockKey) == key {
+				p.LockedVersion = v
+				break
 			}
-			key := strings.ToLower(ns + "/" + p.Name)
-			for lockKey, v := range lockedVersions {
-				if strings.ToLower(lockKey) == key {
-					p.LockedVersion = v
-					break
-				}
-			}
+		}
+		if declared[lockDir] == nil {
+			declared[lockDir] = map[string]bool{}
+		}
+		declared[lockDir][key] = true
+	}
+
+	// Surface providers that only a lock file knows about. A root with a bare
+	// `provider "azurerm" {}` and no required_providers block is valid Terraform,
+	// and used to scan as having no dependencies at all.
+	for lockDir, versions := range locks {
+		known := map[string]bool{}
+		for k := range declared[lockDir] {
+			known[k] = true
+		}
+		normalized := map[string]bool{}
+		for k := range known {
+			normalized[k] = true
+		}
+		for _, lp := range LockedProviders(lockDir, versions, lockKnownSet(normalized)) {
+			result.Providers = append(result.Providers, lp)
 		}
 	}
 
 	return result, nil
+}
+
+// normalizeProviderKey strips the registry host so lock keys and declared
+// providers compare on the same shape.
+func normalizeProviderKey(lockKey string) string {
+	return strings.ToLower(strings.TrimPrefix(lockKey, "registry.terraform.io/"))
+}
+
+// lockKnownSet re-keys declared providers the way lock sources are written.
+func lockKnownSet(declared map[string]bool) map[string]bool {
+	out := make(map[string]bool, len(declared)*2)
+	for k := range declared {
+		out[k] = true
+		out["registry.terraform.io/"+k] = true
+	}
+	return out
 }
 
 // parseLockFile reads .terraform.lock.hcl and returns provider → locked version map.
@@ -261,7 +308,7 @@ func extractModules(file *hcl.File, filePath string) []ModuleDependency {
 
 		sourceType, isAVM := classifySource(source)
 		if sourceType == "local" {
-			continue // skip local modules
+			continue // a local module has no version of its own
 		}
 
 		var versionStr string
@@ -272,8 +319,20 @@ func extractModules(file *hcl.File, filePath string) []ModuleDependency {
 			}
 		}
 
-		// Skip modules without version constraints
-		if versionStr == "" {
+		// A git-sourced module states its version in the ref, not in a version
+		// argument — Terraform rejects `version` on non-registry sources. Reading
+		// only the version attribute made every git module invisible, which is
+		// precisely the set of modules an organisation maintains itself.
+		isGit := isGitSource(source)
+		if versionStr == "" && isGit {
+			versionStr = gitRefOf(source)
+		}
+
+		// A module pinned to nothing tracks whatever the default branch happens to
+		// be today. That is a governance finding in its own right, so record it
+		// instead of discarding it.
+		unpinned := versionStr == ""
+		if unpinned && !isGit {
 			continue
 		}
 
@@ -282,14 +341,22 @@ func extractModules(file *hcl.File, filePath string) []ModuleDependency {
 			relPath = filePath
 		}
 
+		// Git sources keep their full URL: the ref and host are what the resolver
+		// needs, and registrySource() strips exactly those.
+		recorded := registrySource(source)
+		if isGit {
+			recorded = source
+		}
+
 		modules = append(modules, ModuleDependency{
 			Name:       block.Labels[0],
-			Source:     registrySource(source),
+			Source:     recorded,
 			Version:    versionStr,
 			FilePath:   relPath,
 			Line:       block.DefRange.Start.Line,
 			IsAVM:      isAVM,
 			SourceType: sourceType,
+			Unpinned:   unpinned,
 		})
 	}
 
@@ -332,17 +399,16 @@ func extractProviders(file *hcl.File, filePath string) []ProviderDependency {
 				var namespace, versionStr string
 
 				if val.Type().IsObjectType() {
-					sourceVal := val.GetAttr("source")
-					if sourceVal.IsKnown() && !sourceVal.IsNull() {
-						parts := strings.Split(sourceVal.AsString(), "/")
+					// Both attributes are optional: "{ source = "Azure/azapi" }"
+					// without a version is valid, and GetAttr panics on a
+					// missing attribute.
+					if source, ok := stringAttr(val, "source"); ok {
+						parts := strings.Split(source, "/")
 						if len(parts) >= 2 {
 							namespace = parts[len(parts)-2]
 						}
 					}
-					versionVal := val.GetAttr("version")
-					if versionVal.IsKnown() && !versionVal.IsNull() {
-						versionStr = versionVal.AsString()
-					}
+					versionStr, _ = stringAttr(val, "version")
 				} else if val.Type() == cty.String {
 					// Simple string constraint (rare but valid)
 					versionStr = val.AsString()
@@ -483,4 +549,45 @@ func extractBlockText(raw []byte, startByte int, startLine int) (string, int) {
 	}
 
 	return string(raw[startByte:endPos]), endLine
+}
+
+// isGitSource mirrors resolver.IsGitSource. The two packages cannot import each
+// other, and the scanner only needs the yes/no answer.
+func isGitSource(source string) bool {
+	l := strings.ToLower(source)
+	switch {
+	case strings.HasPrefix(l, "git::"), strings.HasPrefix(l, "git@"), strings.HasPrefix(l, "ssh://"):
+		return true
+	case strings.Contains(l, "dev.azure.com"), strings.Contains(l, "visualstudio.com"),
+		strings.Contains(l, "gitlab.com"), strings.Contains(l, "bitbucket.org"):
+		return true
+	}
+	return strings.Contains(l, ".git")
+}
+
+// gitRefOf extracts the "v1" from "git::https://host/org/repo?ref=v1".
+func gitRefOf(source string) string {
+	idx := strings.Index(source, "?")
+	if idx < 0 {
+		return ""
+	}
+	for _, kv := range strings.Split(source[idx+1:], "&") {
+		if v, ok := strings.CutPrefix(kv, "ref="); ok {
+			return v
+		}
+	}
+	return ""
+}
+
+// stringAttr returns an object attribute as a string, reporting false when it
+// is absent, unknown, null or not a string.
+func stringAttr(obj cty.Value, name string) (string, bool) {
+	if !obj.Type().IsObjectType() || !obj.Type().HasAttribute(name) {
+		return "", false
+	}
+	v := obj.GetAttr(name)
+	if !v.IsKnown() || v.IsNull() || v.Type() != cty.String {
+		return "", false
+	}
+	return v.AsString(), true
 }

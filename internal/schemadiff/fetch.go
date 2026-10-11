@@ -3,15 +3,16 @@ package schemadiff
 import (
 	"archive/tar"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 
+	"github.com/anasskartit/tfoutdated/internal/httpx"
 	"github.com/hashicorp/terraform-config-inspect/tfconfig"
 )
 
@@ -19,13 +20,29 @@ import (
 type ModuleFetcher struct {
 	cacheDir string
 	mu       sync.Mutex
+	client   *httpx.Client
 }
 
 // NewModuleFetcher creates a fetcher with a cache directory.
 func NewModuleFetcher() *ModuleFetcher {
 	cacheDir := filepath.Join(os.TempDir(), "tfoutdated-schema-cache")
-	os.MkdirAll(cacheDir, 0755)
-	return &ModuleFetcher{cacheDir: cacheDir}
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		// Not fatal: without a cache we simply refetch, so degrade instead of failing.
+		cacheDir = ""
+	}
+	return &ModuleFetcher{cacheDir: cacheDir, client: httpx.New()}
+}
+
+// maxTFFileBytes caps a single extracted .tf file. Real module files are a few
+// kilobytes; anything past this is not something we want to write to disk.
+const maxTFFileBytes = 4 << 20
+
+// http returns the shared client, tolerating a zero-value ModuleFetcher.
+func (f *ModuleFetcher) http() *httpx.Client {
+	if f.client == nil {
+		f.client = httpx.New()
+	}
+	return f.client
 }
 
 // registryVersionInfo holds the response from the registry version metadata endpoint.
@@ -86,7 +103,7 @@ func (f *ModuleFetcher) resolveGitHubSource(source, version string) (owner, repo
 	url := fmt.Sprintf("https://registry.terraform.io/v1/modules/%s/%s/%s/%s",
 		parts[0], parts[1], parts[2], version)
 
-	resp, err := http.Get(url)
+	resp, err := f.http().Get(context.Background(), url, nil)
 	if err != nil {
 		return "", "", "", fmt.Errorf("registry request: %w", err)
 	}
@@ -136,20 +153,10 @@ func (f *ModuleFetcher) resolveByConvention(parts []string, version string) (str
 func (f *ModuleFetcher) downloadAndExtract(owner, repo, tag, destDir string) error {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/tarball/%s", owner, repo, tag)
 
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-
-	// Use GITHUB_TOKEN if available
-	if token := os.Getenv("GITHUB_TOKEN"); token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	} else if token := os.Getenv("GH_TOKEN"); token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-
-	resp, err := http.DefaultClient.Do(req)
+	// httpx attaches the GitHub token and retries rate limiting; it must not be
+	// bypassed here, or the token stops applying uniformly across the tool.
+	resp, err := f.http().Get(context.Background(), url,
+		map[string]string{"Accept": "application/vnd.github+json"})
 	if err != nil {
 		return fmt.Errorf("github request: %w", err)
 	}
@@ -159,7 +166,9 @@ func (f *ModuleFetcher) downloadAndExtract(owner, repo, tag, destDir string) err
 		return fmt.Errorf("github returned %d for %s/%s@%s", resp.StatusCode, owner, repo, tag)
 	}
 
-	os.MkdirAll(destDir, 0755)
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		return fmt.Errorf("creating %s: %w", destDir, err)
+	}
 
 	gz, err := gzip.NewReader(resp.Body)
 	if err != nil {
@@ -203,7 +212,9 @@ func (f *ModuleFetcher) downloadAndExtract(owner, repo, tag, destDir string) err
 		if err != nil {
 			return fmt.Errorf("creating %s: %w", relPath, err)
 		}
-		if _, err := io.Copy(outFile, tr); err != nil {
+		// Bound the write: a malformed or hostile tarball should not be able to
+		// fill the disk through an unbounded io.Copy.
+		if _, err := io.Copy(outFile, io.LimitReader(tr, maxTFFileBytes)); err != nil {
 			outFile.Close()
 			return fmt.Errorf("writing %s: %w", relPath, err)
 		}

@@ -233,7 +233,9 @@ func (f *Fixer) FixModuleCalls(analysis *analyzer.Analysis, scan *scanner.ScanRe
 	}
 
 	for _, bc := range analysis.BreakingChanges {
-		if bc.Transform == nil || !bc.IsModule {
+		// Transforms on changes that are not auto-fixable (guessed renames,
+		// removals) are only shown as suggestions.
+		if bc.Transform == nil || !bc.IsModule || !bc.AutoFixable {
 			continue
 		}
 

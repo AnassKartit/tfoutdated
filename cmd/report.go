@@ -19,7 +19,7 @@ import (
 )
 
 var reportCmd = &cobra.Command{
-	Use:   "report",
+	Use:   "report [path]",
 	Short: "Verify breaking changes with real terraform validate output",
 	Long: `Runs terraform init + validate on your code with both current and latest
 provider versions to verify that tfoutdated's breaking change detections are real.
@@ -27,6 +27,7 @@ provider versions to verify that tfoutdated's breaking change detections are rea
 Generates a before/after comparison showing:
 - Current versions: terraform validate passes
 - Upgraded versions: terraform validate fails with the exact errors tfoutdated predicted`,
+	Args: cobra.MaximumNArgs(1),
 	RunE: runReport,
 }
 
@@ -76,9 +77,9 @@ type proofMatch struct {
 }
 
 func runReport(cmd *cobra.Command, args []string) error {
-	path, err := filepath.Abs(flagPath)
+	path, err := resolveTargetPath(args)
 	if err != nil {
-		return fmt.Errorf("resolving path: %w", err)
+		return err
 	}
 
 	// Check terraform is available
@@ -102,7 +103,7 @@ func runReport(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("  Found %d outdated dependencies, %d breaking changes predicted\n\n",
-		len(analysis.Dependencies), len(analysis.BreakingChanges))
+		len(analysis.Dependencies), breaking.CountBreaking(analysis.BreakingChanges))
 
 	// Step 2: terraform validate with CURRENT versions (should pass)
 	fmt.Println("Step 2: Running terraform validate with CURRENT versions...")

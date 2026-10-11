@@ -5,6 +5,7 @@ import (
 	"io"
 
 	"github.com/anasskartit/tfoutdated/internal/analyzer"
+	"github.com/anasskartit/tfoutdated/internal/lifecycle"
 	"github.com/anasskartit/tfoutdated/internal/resolver"
 )
 
@@ -12,19 +13,20 @@ import (
 type JSONRenderer struct{}
 
 type jsonOutput struct {
-	ScannedFiles    int                           `json:"scannedFiles"`
-	TotalDeps       int                           `json:"totalDeps"`
-	Outdated        int                           `json:"outdated"`
-	UpToDate        int                           `json:"upToDate"`
-	Deprecated      int                           `json:"deprecated"`
-	Summary         string                        `json:"summary"`
-	DurationMs      int64                         `json:"durationMs"`
-	Dependencies    []jsonDependency              `json:"dependencies"`
-	BreakingChanges []jsonBreakingChange          `json:"breaking_changes,omitempty"`
-	UpgradePaths    []jsonUpgradePath             `json:"upgrade_paths,omitempty"`
-	Alignments      []jsonAlignment               `json:"alignment_issues,omitempty"`
-	Recommendations []jsonRecommendation          `json:"recommendations,omitempty"`
-	ProviderImpact  *jsonProviderImpact           `json:"provider_impact,omitempty"`
+	Target          string               `json:"target,omitempty"`
+	ScannedFiles    int                  `json:"scannedFiles"`
+	TotalDeps       int                  `json:"totalDeps"`
+	Outdated        int                  `json:"outdated"`
+	UpToDate        int                  `json:"upToDate"`
+	Deprecated      int                  `json:"deprecated"`
+	Summary         string               `json:"summary"`
+	DurationMs      int64                `json:"durationMs"`
+	Dependencies    []jsonDependency     `json:"dependencies"`
+	BreakingChanges []jsonBreakingChange `json:"breaking_changes,omitempty"`
+	UpgradePaths    []jsonUpgradePath    `json:"upgrade_paths,omitempty"`
+	Alignments      []jsonAlignment      `json:"alignment_issues,omitempty"`
+	Recommendations []jsonRecommendation `json:"recommendations,omitempty"`
+	ProviderImpact  *jsonProviderImpact  `json:"provider_impact,omitempty"`
 }
 
 type jsonRecommendation struct {
@@ -36,60 +38,68 @@ type jsonRecommendation struct {
 }
 
 type jsonProviderImpact struct {
-	TargetProvider string                    `json:"target_provider"`
-	TargetVersion  string                    `json:"target_version"`
-	TotalModules   int                       `json:"total_modules"`
-	Compatible     int                       `json:"compatible"`
-	NeedUpgrade    int                       `json:"need_upgrade"`
-	Incompatible   int                       `json:"incompatible"`
+	TargetProvider string                     `json:"target_provider"`
+	TargetVersion  string                     `json:"target_version"`
+	TotalModules   int                        `json:"total_modules"`
+	Compatible     int                        `json:"compatible"`
+	NeedUpgrade    int                        `json:"need_upgrade"`
+	Incompatible   int                        `json:"incompatible"`
 	Results        []jsonProviderImpactResult `json:"results"`
-	DurationMs     int64                     `json:"duration_ms"`
+	DurationMs     int64                      `json:"duration_ms"`
 }
 
 type jsonProviderImpactResult struct {
-	Module               string `json:"module"`
-	CurrentModuleVer     string `json:"current_module_version"`
-	LatestModuleVer      string `json:"latest_module_version"`
-	Compatible           bool   `json:"compatible"`
-	RequiresModuleUpgrade bool  `json:"requires_module_upgrade"`
-	MinCompatibleVer     string `json:"min_compatible_version,omitempty"`
-	File                 string `json:"file"`
-	Line                 int    `json:"line"`
+	Module                string `json:"module"`
+	CurrentModuleVer      string `json:"current_module_version"`
+	LatestModuleVer       string `json:"latest_module_version"`
+	Compatible            bool   `json:"compatible"`
+	RequiresModuleUpgrade bool   `json:"requires_module_upgrade"`
+	MinCompatibleVer      string `json:"min_compatible_version,omitempty"`
+	File                  string `json:"file"`
+	Line                  int    `json:"line"`
 }
 
 type jsonDependency struct {
-	Name       string   `json:"name"`
-	Source     string   `json:"source"`
-	Current    string   `json:"current"`
-	Latest     string   `json:"latest"`
-	Constraint string   `json:"constraint,omitempty"`
-	UpdateType string   `json:"update_type"`
-	Status     string   `json:"status"`
-	Type       string   `json:"type"`
-	SourceType string   `json:"source_type,omitempty"`
-	FilePath   string   `json:"file_path"`
-	Line       int      `json:"line"`
-	IsModule   bool     `json:"is_module"`
-	IsAVM      bool     `json:"is_avm,omitempty"`
-	Deprecated bool     `json:"deprecated,omitempty"`
-	ReplacedBy string   `json:"replaced_by,omitempty"`
-	AllVersions []string `json:"all_versions,omitempty"`
+	Name              string `json:"name"`
+	Source            string `json:"source"`
+	Current           string `json:"current"`
+	Latest            string `json:"latest"`
+	Constraint        string `json:"constraint,omitempty"`
+	UpdateType        string `json:"update_type"`
+	Status            string `json:"status"`
+	Type              string `json:"type"`
+	SourceType        string `json:"source_type,omitempty"`
+	FilePath          string `json:"file_path"`
+	Line              int    `json:"line"`
+	IsModule          bool   `json:"is_module"`
+	IsAVM             bool   `json:"is_avm,omitempty"`
+	Deprecated        bool   `json:"deprecated,omitempty"`
+	ReplacedBy        string `json:"replaced_by,omitempty"`
+	ReplacedByVersion string `json:"replaced_by_version,omitempty"`
+	DeprecationReason string `json:"deprecation_reason,omitempty"`
+	// Evidence links each signal to the page that shows it.
+	Evidence    []lifecycle.Evidence `json:"evidence,omitempty"`
+	AllVersions []string             `json:"all_versions,omitempty"`
+	// NeedsReview marks a provider major upgrade with no known breaking
+	// change: unknown, not safe.
+	NeedsReview  bool   `json:"needs_review,omitempty"`
+	UpgradeGuide string `json:"upgrade_guide,omitempty"`
 }
 
 type jsonBreakingChange struct {
-	Provider       string             `json:"provider"`
-	Version        string             `json:"version"`
-	ResourceType   string             `json:"resource_type,omitempty"`
-	Attribute      string             `json:"attribute,omitempty"`
-	Kind           string             `json:"kind"`
-	Severity       string             `json:"severity"`
-	Description    string             `json:"description"`
-	MigrationGuide string             `json:"migration_guide,omitempty"`
-	AutoFixable    bool               `json:"auto_fixable"`
-	BeforeSnippet  string             `json:"before_snippet,omitempty"`
-	AfterSnippet   string             `json:"after_snippet,omitempty"`
-	EffortLevel       string             `json:"effort_level,omitempty"`
-	DynamicDetected   bool               `json:"dynamic_detected,omitempty"`
+	Provider          string                 `json:"provider"`
+	Version           string                 `json:"version"`
+	ResourceType      string                 `json:"resource_type,omitempty"`
+	Attribute         string                 `json:"attribute,omitempty"`
+	Kind              string                 `json:"kind"`
+	Severity          string                 `json:"severity"`
+	Description       string                 `json:"description"`
+	MigrationGuide    string                 `json:"migration_guide,omitempty"`
+	AutoFixable       bool                   `json:"auto_fixable"`
+	BeforeSnippet     string                 `json:"before_snippet,omitempty"`
+	AfterSnippet      string                 `json:"after_snippet,omitempty"`
+	EffortLevel       string                 `json:"effort_level,omitempty"`
+	DynamicDetected   bool                   `json:"dynamic_detected,omitempty"`
 	AffectedResources []jsonAffectedResource `json:"affected_resources,omitempty"`
 }
 
@@ -133,6 +143,7 @@ func (r *JSONRenderer) Render(w io.Writer, analysis *analyzer.Analysis) error {
 	}
 
 	out := jsonOutput{
+		Target:       analysis.Target,
 		ScannedFiles: analysis.ScannedFiles,
 		TotalDeps:    analysis.TotalDeps,
 		Outdated:     outdated,
@@ -156,38 +167,43 @@ func (r *JSONRenderer) Render(w io.Writer, analysis *analyzer.Analysis) error {
 			sourceType = "provider"
 		}
 		out.Dependencies = append(out.Dependencies, jsonDependency{
-			Name:        dep.Name,
-			Source:      dep.Source,
-			Current:     dep.CurrentVer,
-			Latest:      dep.LatestVer,
-			Constraint:  dep.Constraint,
-			UpdateType:  dep.UpdateType.String(),
-			Status:      status,
-			Type:        depType,
-			SourceType:  sourceType,
-			FilePath:    dep.FilePath,
-			Line:        dep.Line,
-			IsModule:    dep.IsModule,
-			IsAVM:       dep.IsAVM,
-			Deprecated:  dep.Deprecated,
-			ReplacedBy:  dep.ReplacedBy,
-			AllVersions: dep.AllVersions,
+			Name:              dep.Name,
+			Source:            dep.Source,
+			Current:           dep.CurrentVer,
+			Latest:            dep.LatestVer,
+			Constraint:        dep.Constraint,
+			UpdateType:        dep.UpdateType.String(),
+			Status:            status,
+			Type:              depType,
+			SourceType:        sourceType,
+			FilePath:          dep.FilePath,
+			Line:              dep.Line,
+			IsModule:          dep.IsModule,
+			IsAVM:             dep.IsAVM,
+			Deprecated:        dep.Deprecated,
+			ReplacedBy:        dep.ReplacedBy,
+			ReplacedByVersion: dep.ReplacedByVersion,
+			DeprecationReason: dep.DeprecationReason,
+			Evidence:          dep.Evidence,
+			AllVersions:       dep.AllVersions,
+			NeedsReview:       analyzer.NeedsReview(dep, analysis.BreakingChanges),
+			UpgradeGuide:      analyzer.UpgradeGuideURL(dep),
 		})
 	}
 
 	for _, bc := range analysis.BreakingChanges {
 		jbc := jsonBreakingChange{
-			Provider:       bc.Provider,
-			Version:        bc.Version,
-			ResourceType:   bc.ResourceType,
-			Attribute:      bc.Attribute,
-			Kind:           bc.Kind.String(),
-			Severity:       bc.Severity.String(),
-			Description:    bc.Description,
-			MigrationGuide: bc.MigrationGuide,
-			AutoFixable:    bc.AutoFixable,
-			BeforeSnippet:  bc.BeforeSnippet,
-			AfterSnippet:   bc.AfterSnippet,
+			Provider:        bc.Provider,
+			Version:         bc.Version,
+			ResourceType:    bc.ResourceType,
+			Attribute:       bc.Attribute,
+			Kind:            bc.Kind.String(),
+			Severity:        bc.Severity.String(),
+			Description:     bc.Description,
+			MigrationGuide:  bc.MigrationGuide,
+			AutoFixable:     bc.AutoFixable,
+			BeforeSnippet:   bc.BeforeSnippet,
+			AfterSnippet:    bc.AfterSnippet,
 			EffortLevel:     bc.EffortLevel,
 			DynamicDetected: bc.DynamicDetected,
 		}
@@ -274,10 +290,11 @@ func (r *JSONRenderer) Render(w io.Writer, analysis *analyzer.Analysis) error {
 		out.ProviderImpact = ji
 	}
 
-	// Filter out zero-value update types
+	// Filter out zero-value update types, but keep deprecated modules: being
+	// on the latest version of a module that is no longer maintained is a finding.
 	var filtered []jsonDependency
 	for _, d := range out.Dependencies {
-		if d.UpdateType != resolver.UpdateNone.String() {
+		if d.UpdateType != resolver.UpdateNone.String() || d.Deprecated {
 			filtered = append(filtered, d)
 		}
 	}

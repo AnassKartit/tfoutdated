@@ -17,6 +17,11 @@ type SchemaChange struct {
 	OldValue    string
 	NewValue    string
 	ValueHint   breaking.ValueHint
+	// Probable marks a change inferred by similarity rather than read from the
+	// schema: a rename guessed from a removed and an added variable. It is
+	// shown as a suggestion and never applied automatically.
+	Probable bool
+	Score    float64 // similarity behind a probable rename, 0..1
 }
 
 // DiffModules compares two parsed module schemas and returns detected changes.
@@ -50,13 +55,11 @@ func diffVariables(oldMod, newMod *tfconfig.Module, source string) []SchemaChang
 	}
 
 	// Step 2: Detect renames via multi-signal matching
-	renames := detectRenames(removed, added, oldMod, newMod)
+	renames, scores := detectRenamesScored(removed, added, oldMod, newMod)
 
-	// Track rename targets so we exclude them from RequiredAdded detection
+	// A guessed rename does not hide facts: a new required variable is still
+	// reported as required, in case the guess is wrong.
 	renameTargets := make(map[string]bool)
-	for _, newName := range renames {
-		renameTargets[newName] = true
-	}
 
 	// Step 3: Emit changes for removed variables
 	for name, oldVar := range oldMod.Variables {
@@ -65,14 +68,18 @@ func diffVariables(oldMod, newMod *tfconfig.Module, source string) []SchemaChang
 			if rename, ok := renames[name]; ok {
 				renamedVar := newMod.Variables[rename]
 				hint := InferValueHint(name, oldVar.Description, rename, renamedVar.Description)
+				score := scores[name]
 				changes = append(changes, SchemaChange{
-					Kind:        breaking.VariableRenamed,
-					Severity:    breaking.SeverityBreaking,
-					Name:        name,
-					Description: fmt.Sprintf("Variable '%s' renamed to '%s'", name, rename),
-					OldValue:    name,
-					NewValue:    rename,
-					ValueHint:   hint,
+					Kind:     breaking.VariableRenamed,
+					Severity: breaking.SeverityBreaking,
+					Name:     name,
+					Description: fmt.Sprintf("Variable '%s' no longer exists; '%s' looks like its replacement (%.0f%% match). Check the release notes before renaming.",
+						name, rename, score*100),
+					OldValue:  name,
+					NewValue:  rename,
+					ValueHint: hint,
+					Probable:  true,
+					Score:     score,
 				})
 			} else {
 				changes = append(changes, SchemaChange{
@@ -269,4 +276,3 @@ func countResourceProviders(mod *tfconfig.Module) map[string]int {
 	}
 	return counts
 }
-
